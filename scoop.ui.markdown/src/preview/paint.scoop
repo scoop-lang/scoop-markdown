@@ -72,6 +72,7 @@ internal fun mdScenePreview(
                 host.rich?.sceneInput(content, frame)
             }
         )
+        host.scrollbars.scene(context, frame.scrollSnapshot)
         context.onFrameComplete {
             completion ->
             if (

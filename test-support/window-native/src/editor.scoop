@@ -1,5 +1,9 @@
 package scoop.tests.window
 
+/** Checks the requested system cursor and the cursor currently selected by AppKit. */
+@Extern(name = "scoop_window_test_editor_cursor")
+public fun nativeEditorCursor(view: Ptr<Unit>, text: Boolean): Boolean
+
 /** Sends a commit, preedit, cancel or unmark through the actual NSTextInputClient. */
 @Extern(name = "scoop_window_test_editor_text")
 public fun nativeEditorText(

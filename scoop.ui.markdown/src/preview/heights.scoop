@@ -28,6 +28,7 @@ internal fun mdSyncPreviewHeights(
             else -> false
         }
     if (!same || !sameRegions || !sameRaw) {
+        host.maximumWidth = 0.0
         when (host.heightRaw) {
             case Some(val previous) -> host.heights =
                 previous.restoreHeights(host.heights, estimate)

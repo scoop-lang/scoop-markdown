@@ -5,91 +5,187 @@ import scoop.ui.component.*
 import scoop.ui.markdown.*
 import scoop.window.*
 
-internal fun EditorWindow.applicationMenu(): NativeMenuContent {
-    val owner = this
-    return nativeMenu {
+internal fun editorApplicationMenu(
+    documents: EditorApplication,
+    owner: EditorWindow? = None
+): NativeMenuContent =
+    nativeMenu {
         submenu(
             ViewKey.Text("application"),
             "Scoop Markdown",
             nativeMenu {
-                item(ViewKey.Text("quit"), "退出 Scoop Markdown", { _ -> owner.quit() }) {
+                item(ViewKey.Text("quit"), "退出 Scoop Markdown", { _ -> documents.quit() }) {
                     shortcut = Some(editorShortcut("q"))
+                    enabled = !documents.quitting.value
                 }
             }
         )
-        submenu(
-            ViewKey.Text("file"),
-            "文件",
-            nativeMenu {
-                item(ViewKey.Text("save"), "保存", { _ -> owner.save() }) {
-                    shortcut = Some(editorShortcut("s"))
-                }
+        submenu(ViewKey.Text("file"), "文件", editorFileMenu(documents, owner))
+        when (owner) {
+            case Some(val window) -> {
+                submenu(ViewKey.Text("edit"), "编辑", window.editMenu())
+                submenu(ViewKey.Text("view"), "显示", window.viewMenu())
             }
-        )
+            case None -> Unit
+        }
         submenu(
-            ViewKey.Text("edit"),
-            "编辑",
+            ViewKey.Text("windows"),
+            "窗口",
             nativeMenu {
-                role(ViewKey.Text("undo"), "撤销", MenuRole.Undo) {
-                    shortcut = Some(editorShortcut("z"))
+                role(ViewKey.Text("minimize"), "最小化", MenuRole.Minimize) {
+                    shortcut = Some(editorShortcut("m"))
+                    enabled =
+                        when (owner) {
+                            case Some(_) -> true;
+                            case None -> false
+                        }
                 }
-                role(ViewKey.Text("redo"), "重做", MenuRole.Redo) {
-                    shortcut = Some(editorShortcut("z", true))
+                role(ViewKey.Text("zoom"), "缩放", MenuRole.Zoom) {
+                    enabled =
+                        when (owner) {
+                            case Some(_) -> true;
+                            case None -> false
+                        }
                 }
-                separator(ViewKey.Text("clipboard"))
-                role(ViewKey.Text("cut"), "剪切", MenuRole.Cut) {
-                    shortcut = Some(editorShortcut("x"))
-                }
-                role(ViewKey.Text("copy"), "复制", MenuRole.Copy) {
-                    shortcut = Some(editorShortcut("c"))
-                }
-                role(ViewKey.Text("paste"), "粘贴", MenuRole.Paste) {
-                    shortcut = Some(editorShortcut("v"))
-                }
-                role(ViewKey.Text("select-all"), "全选", MenuRole.SelectAll) {
-                    shortcut = Some(editorShortcut("a"))
-                }
-                separator(ViewKey.Text("find-separator"))
-                item(ViewKey.Text("find"), "查找…", { _ -> owner.search.show() }) {
-                    shortcut = Some(editorShortcut("f"))
-                }
-                item(ViewKey.Text("replace"), "查找与替换…", { _ -> owner.search.show(true) }) {
-                    shortcut = Some(editorShortcut("f", alt = true))
-                }
-                item(
-                    ViewKey.Text("location"),
-                    "前往行…",
-                    { _ -> owner.location.open(owner.navigation) }
-                ) { shortcut = Some(editorShortcut("l")) }
-            }
-        )
-        submenu(
-            ViewKey.Text("view"),
-            "显示",
-            nativeMenu {
-                for (
-                    entry in [
-                        (MarkdownEditorMode.Source, "1"),
-                        (MarkdownEditorMode.Wysiwyg, "2"),
-                        (MarkdownEditorMode.SideBySide, "3")
-                    ]
-                ) {
-                    val(mode, key) = entry
+                val windows = documents.windows
+                if (windows.size > 0L)
+                    separator(ViewKey.Text("documents-separator"))
+                for (session in windows) {
+                    val selected =
+                        when (owner) {
+                            case Some(val window) -> window.session === session
+                            case None -> false
+                        }
                     item(
-                        ViewKey.Text(key),
+                        ViewKey.Number(session.window.id.value),
                         (
-                            if (owner.view.mode == mode)
+                            if (selected)
                                 "✓  "
                             else
                                 ""
                         ) +
-                            editorModeName(mode),
-                        { _ -> owner.setMode(mode) }
-                    ) { shortcut = Some(editorShortcut(key, alt = true)) }
+                            session.document.name,
+                        { _ -> documents.focus(session) }
+                    ) { enabled = !session.closing && !documents.quitting.value }
                 }
-                separator(ViewKey.Text("sidebar-separator"))
-                checkboxItem(ViewKey.Text("sidebar"), "显示大纲", owner.outline.binding())
             }
         )
+    }
+
+private fun editorFileMenu(documents: EditorApplication, owner: EditorWindow?): NativeMenuContent {
+    val ready =
+        owner?.files?.isPending ==
+            Some(false) &&
+            owner?.confirmation?.isPending ==
+            Some(false) &&
+            !documents.quitting.value
+    return nativeMenu {
+        item(ViewKey.Text("new"), "新建", { _ -> documents.newDocument() }) {
+            shortcut = Some(editorShortcut("n"))
+            enabled = documents.canOpen
+        }
+        item(ViewKey.Text("open"), "打开…", { _ -> documents.root?.openFile(owner) }) {
+            shortcut = Some(editorShortcut("o"))
+            enabled = documents.canOpen
+        }
+        submenu(
+            ViewKey.Text("recent"),
+            "最近打开的文件",
+            nativeMenu {
+                val recent = documents.recent.entries
+                if (recent.size == 0L)
+                    item(ViewKey.Text("empty"), "没有最近打开的文件", { _ -> Unit }) { enabled = false }
+                for (index in 0L ..< recent.size) {
+                    val path = recent[index]
+                    item(
+                        ViewKey.Number(index),
+                        path.display(),
+                        { _ -> documents.open(path, owner) }
+                    ) { enabled = documents.canOpen }
+                }
+                separator(ViewKey.Text("clear-separator"))
+                item(ViewKey.Text("clear"), "清除菜单", { _ -> documents.clearRecent(owner) }) {
+                    enabled = recent.size > 0L && !documents.quitting.value
+                }
+            }
+        )
+        separator(ViewKey.Text("save-separator"))
+        item(ViewKey.Text("save"), "保存", { _ -> owner?.save() }) {
+            shortcut = Some(editorShortcut("s"))
+            enabled = ready
+        }
+        item(ViewKey.Text("save-as"), "另存为…", { _ -> owner?.save(true) }) {
+            shortcut = Some(editorShortcut("s", true))
+            enabled = ready
+        }
+        separator(ViewKey.Text("close-separator"))
+        item(
+            ViewKey.Text("close"),
+            "关闭",
+            {
+                _ -> when (owner) {
+                    case Some(val window) -> documents.requestClose(window.session)
+                    case None -> Unit
+                }
+            }
+        ) {
+            shortcut = Some(editorShortcut("w"))
+            enabled = ready
+        }
+    }
+}
+
+private fun EditorWindow.editMenu(): NativeMenuContent {
+    val owner = this
+    return nativeMenu {
+        role(ViewKey.Text("undo"), "撤销", MenuRole.Undo) { shortcut = Some(editorShortcut("z")) }
+        role(ViewKey.Text("redo"), "重做", MenuRole.Redo) {
+            shortcut = Some(editorShortcut("z", true))
+        }
+        separator(ViewKey.Text("clipboard"))
+        role(ViewKey.Text("cut"), "剪切", MenuRole.Cut) { shortcut = Some(editorShortcut("x")) }
+        role(ViewKey.Text("copy"), "复制", MenuRole.Copy) { shortcut = Some(editorShortcut("c")) }
+        role(ViewKey.Text("paste"), "粘贴", MenuRole.Paste) { shortcut = Some(editorShortcut("v")) }
+        role(ViewKey.Text("select-all"), "全选", MenuRole.SelectAll) {
+            shortcut = Some(editorShortcut("a"))
+        }
+        separator(ViewKey.Text("find-separator"))
+        item(ViewKey.Text("find"), "查找…", { _ -> owner.search.show() }) {
+            shortcut = Some(editorShortcut("f"))
+        }
+        item(ViewKey.Text("replace"), "查找与替换…", { _ -> owner.search.show(true) }) {
+            shortcut = Some(editorShortcut("f", alt = true))
+        }
+        item(ViewKey.Text("location"), "前往行…", { _ -> owner.location.open(owner.navigation) }) {
+            shortcut = Some(editorShortcut("l"))
+        }
+    }
+}
+
+private fun EditorWindow.viewMenu(): NativeMenuContent {
+    val owner = this
+    return nativeMenu {
+        for (
+            entry in [
+                (MarkdownEditorMode.Source, "1"),
+                (MarkdownEditorMode.Wysiwyg, "2"),
+                (MarkdownEditorMode.SideBySide, "3")
+            ]
+        ) {
+            val(mode, key) = entry
+            item(
+                ViewKey.Text(key),
+                (
+                    if (owner.view.mode == mode)
+                        "✓  "
+                    else
+                        ""
+                ) +
+                    editorModeName(mode),
+                { _ -> owner.setMode(mode) }
+            ) { shortcut = Some(editorShortcut(key, alt = true)) }
+        }
+        separator(ViewKey.Text("sidebar-separator"))
+        checkboxItem(ViewKey.Text("sidebar"), "显示大纲", owner.outline.binding())
     }
 }

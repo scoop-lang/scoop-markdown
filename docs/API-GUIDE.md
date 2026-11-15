@@ -1,6 +1,10 @@
 # Markdown API 导航
 
+桌面应用 `markdown-editor` 可不带文件参数启动；新建、系统打开／保存面板、最近文件、多个文档窗口及未保存确认由应用管理，使用方式见[编辑器说明](../markdown-editor/README.md)。
+
 此导航随库源码维护；完整用法见 [scoop.markdown](../scoop.markdown/README.md) 与 [scoop.ui.markdown](../scoop.ui.markdown/README.md)。
+
+源码、预览与富文本 View／Host 自带按溢出显示的滚动条，借用各自的 ScrollState，支持拖动、轨道翻页和滚轮；正文输入区域使用系统 I 型鼠标光标。这些行为无需额外包裹 scrollArea；双栏仍使用 MarkdownEditorViewState 的 sourceScroll／richScroll 和 synchronizeScroll。
 
 | 任务 | API 与用法 |
 | --- | --- |

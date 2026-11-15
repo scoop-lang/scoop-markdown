@@ -142,7 +142,7 @@ internal fun EditorWindow.statusBar(): View {
                 item(editorCaption(owner.message.value)) { max = Some(220.0) }
             item(
                 editorCaption(
-                    if (owner.editor.isDirty)
+                    if (owner.editor.isDirty || owner.document.file == None)
                         "未保存"
                     else
                         "已保存",

@@ -1,0 +1,45 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.test.*
+import scoop.ui.*
+
+@Test
+private class MarkdownScrollbarTests {
+    @Test
+    fun hidesAxesWithoutOverflowAndEmptyViewports() {
+        val fitted = ScrollSnapshot(Point(0.0, 0.0), Size(300.0, 200.0), Size(300.0, 160.0))
+        assertEquals(None, mdScrollbarGeometry(fitted, false, LayoutDirection.Ltr))
+        assertEquals(None, mdScrollbarGeometry(fitted, true, LayoutDirection.Ltr))
+        val empty = ScrollSnapshot(Point(0.0, 0.0), Size(0.0, 0.0), Size(300.0, 200.0))
+        assertEquals(None, mdScrollbarGeometry(empty, false, LayoutDirection.Ltr))
+        assertEquals(None, mdScrollbarGeometry(empty, true, LayoutDirection.Ltr))
+    }
+
+    @Test
+    fun bothAxesAvoidTheCornerAndRespectLayoutDirection() {
+        val snapshot = ScrollSnapshot(Point(400.0, 450.0), Size(200.0, 100.0), Size(1000.0, 1000.0))
+        val vertical = mdScrollbarGeometry(snapshot, false, LayoutDirection.Ltr)!!
+        val horizontal = mdScrollbarGeometry(snapshot, true, LayoutDirection.Ltr)!!
+        assertTrue(horizontal.bounds.x + horizontal.bounds.width <= vertical.bounds.x)
+        assertTrue(vertical.bounds.y + vertical.bounds.height <= horizontal.bounds.y)
+        val rtlVertical = mdScrollbarGeometry(snapshot, false, LayoutDirection.Rtl)!!
+        val rtlHorizontal = mdScrollbarGeometry(snapshot, true, LayoutDirection.Rtl)!!
+        assertEquals(0.0, rtlVertical.bounds.x)
+        assertTrue(rtlHorizontal.bounds.x >= rtlVertical.bounds.width)
+        assertEquals(vertical.thumb.y, rtlVertical.thumb.y)
+    }
+
+    @Test
+    fun thumbMappingReachesBothEndsAndKeepsTheGrabPoint() {
+        val snapshot = ScrollSnapshot(Point(0.0, 400.0), Size(300.0, 200.0), Size(300.0, 1000.0))
+        val bar = mdScrollbarGeometry(snapshot, false, LayoutDirection.Ltr)!!
+        val center =
+            Point(bar.thumb.x + bar.thumb.width / 2.0, bar.thumb.y + bar.thumb.height / 2.0)
+        assertEquals(400.0, bar.offset(center, 0.5))
+        assertEquals(0.0, bar.offset(Point(center.x, -100.0), 0.5))
+        assertEquals(800.0, bar.offset(Point(center.x, 1000.0), 0.5))
+        val large = ScrollSnapshot(Point(0.0, 0.0), Size(300.0, 200.0), Size(300.0, 1000000.0))
+        assertTrue(mdScrollbarGeometry(large, false, LayoutDirection.Ltr)!!.thumb.height >= 24.0)
+    }
+}

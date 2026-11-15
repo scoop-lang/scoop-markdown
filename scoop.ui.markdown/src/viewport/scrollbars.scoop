@@ -1,0 +1,195 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.surface.*
+import scoop.ui.*
+import scoop.window.*
+
+/** Adds overlay controls to an existing virtual viewport without binding a second one. */
+internal class MdScrollbars(
+    scope: ComponentScope,
+    scroll: ScrollState,
+    enabled: Boolean,
+    lineStep: Double
+): Closeable {
+    private val horizontal = MdScrollbar(scope, scroll, true, enabled, lineStep)
+    private val vertical = MdScrollbar(scope, scroll, false, enabled, lineStep)
+
+    fun update(enabled: Boolean, lineStep: Double) {
+        horizontal.update(enabled, lineStep)
+        vertical.update(enabled, lineStep)
+    }
+
+    fun scene(context: SceneContext, snapshot: ScrollSnapshot) {
+        horizontal.scene(context, snapshot)
+        vertical.scene(context, snapshot)
+    }
+
+    public override fun close() {
+        var failure = mdCleanup(None) { horizontal.close() }
+        failure = mdCleanup(failure) { vertical.close() }
+        mdThrow(failure)
+    }
+}
+
+private class MdScrollbar(
+    private val scope: ComponentScope,
+    private val scroll: ScrollState,
+    private val horizontal: Boolean,
+    private var enabled: Boolean,
+    private var lineStep: Double
+): Closeable {
+    private var closed = false
+    private var geometry: MdScrollbarGeometry? = None
+    private var grab = 0.0
+    private val area = scope.createArea { context, event -> handle(context, event) }
+    private val drag =
+        scope.drag(
+            area,
+            options(),
+            { point -> geometry?.thumb?.contains(point) ?: false },
+            { event -> dragged(event) }
+        )
+
+    init {
+        area.scope.enabled = enabled
+        area.scope.defaultAction = { context, event -> handle(context, event) }
+    }
+
+    private fun options(): DragOptions =
+        DragOptions(
+            if (horizontal)
+                DragAxis.Horizontal
+            else
+                DragAxis.Vertical,
+            threshold = 0.0,
+            enabled = enabled
+        )
+
+    fun update(enabled: Boolean, lineStep: Double) {
+        this.enabled = enabled
+        this.lineStep = lineStep
+        area.scope.enabled = enabled
+        drag.update(options(), { point -> geometry?.thumb?.contains(point) ?: false }) {
+            event -> dragged(event)
+        }
+    }
+
+    fun scene(context: SceneContext, snapshot: ScrollSnapshot) {
+        val next = mdScrollbarGeometry(snapshot, horizontal, context.layoutDirection)
+        when (next) {
+            case Some(val shape) -> {
+                if (enabled)
+                    context.place(area, shape.bounds)
+                val alpha =
+                    if (!enabled)
+                        0.25
+                    else
+                        if (area.scope.isHovered || drag.isDragging)
+                            0.8
+                        else
+                            0.55
+                context.draw {
+                    paint ->
+                    paint.canvas.drawRect(shape.bounds, Paint(Color(0.5, 0.5, 0.5, 0.1)))
+                    paint.canvas.drawRoundRect(
+                        shape.thumb,
+                        4.0,
+                        4.0,
+                        Paint(Color(0.48, 0.5, 0.53, alpha))
+                    )
+                }
+            }
+            case None -> Unit
+        }
+        context.onFrameComplete {
+            frame -> if (!closed && frame.submission == FrameSubmission.Accepted) {
+                geometry = next
+                if (next == None)
+                    drag.cancel()
+            }
+        }
+    }
+
+    private fun handle(context: RoutedEventContext, event: InputEvent) {
+        if (closed || !scope.isMounted)
+            return
+        if (context.phase == RoutedPhase.Notification) {
+            when (event) {
+                case Pointer(InputPointerEvent.Entered(_)) -> scope.requestFrame()
+                case Pointer(InputPointerEvent.Left(_)) -> scope.requestFrame()
+                else -> Unit
+            }
+            return
+        }
+        if (context.phase != RoutedPhase.Default || !enabled)
+            return
+        when (event) {
+            case Pointer(
+                InputPointerEvent.Button(_, MouseButton.Left, ElementState.Pressed, _)
+            ) -> {
+                val shape = geometry ?: return
+                val point = context.localPosition ?: return
+                if (shape.thumb.contains(point))
+                    return
+                val amount =
+                    if (shape.axis(point) < shape.thumbStart)
+                        -shape.page
+                    else
+                        shape.page
+                scroll.scrollBy(
+                    if (horizontal)
+                        Point(amount, 0.0)
+                    else
+                        Point(0.0, amount),
+                    ScrollOrigin.User
+                )
+                context.consume()
+            }
+            case Pointer(InputPointerEvent.Wheel(_, _, _, _)) -> context.consumeScroll(lineStep) {
+                amount ->
+                val moved = scroll.scrollBy(Point(-amount.x, -amount.y), ScrollOrigin.User)
+                Point(-moved.x, -moved.y)
+            }
+            else -> Unit
+        }
+    }
+
+    private fun dragged(event: DragEvent) {
+        when (event) {
+            case Started(val sample) -> {
+                val shape = geometry ?: return
+                grab = (shape.axis(sample.position) - shape.thumbStart) / shape.thumbLength
+                scroll.beginLayoutRequest(ScrollOrigin.User)
+            }
+            case Moved(val sample) -> move(sample.position)
+            case Ended(val sample) -> move(sample.position)
+            case Cancelled(_, _) -> Unit
+        }
+        if (!closed && scope.isMounted)
+            scope.requestFrame()
+    }
+
+    private fun move(point: Point) {
+        val shape = geometry ?: return
+        val offset = shape.offset(point, grab)
+        val current = scroll.offset
+        scroll.scrollTo(
+            if (horizontal)
+                Point(offset, current.y)
+            else
+                Point(current.x, offset),
+            ScrollOrigin.User
+        )
+    }
+
+    public override fun close() {
+        if (closed)
+            return
+        closed = true
+        var failure = mdCleanup(None) { drag.close() }
+        failure = mdCleanup(failure) { area.close() }
+        geometry = None
+        mdThrow(failure)
+    }
+}

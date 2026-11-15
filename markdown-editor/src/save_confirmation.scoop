@@ -1,0 +1,75 @@
+package scoop.examples.markdown.editor
+
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.window.*
+import scoop.surface.*
+import scoop.ui.style.*
+import scoop.graphics.Paint
+
+internal enum EditorSaveChoice {
+    Save, Discard
+}
+
+internal class EditorSaveConfirmation(
+    private val fileName: String,
+    private val response: NativeDialogResponse<EditorSaveChoice>,
+    scope: ComponentScope
+): Component(scope) {
+    public override fun onMount() {
+        scope.resource {
+            ShortcutScope(
+                scope.input,
+                [
+                    shortcutBinding(
+                        ShortcutChord(ShortcutKey.Logical(LogicalKey.Named(NamedKey.Escape))),
+                        { response.cancel() }
+                    ),
+                    shortcutBinding(
+                        ShortcutChord(ShortcutKey.Logical(LogicalKey.Named(NamedKey.Enter))),
+                        { response.accept(EditorSaveChoice.Save) }
+                    )
+                ]
+            )
+        }
+    }
+
+    public override fun render(): View {
+        val name = fileName
+        val response = this.response
+        return frame(
+            column {
+                alignment = CrossAlignment.Stretch
+                spacing = 16.0
+                label("要保存对“" + name + "”的修改吗？") {
+                    style {
+                        fontSize = Some(18.0);
+                        weight = Some(600)
+                    }
+                }
+                label("不保存将丢弃尚未写入文件的修改。")
+                item(empty()) {
+                    grow = 1.0;
+                    basis = FlexBasis.Fixed(0.0)
+                }
+                row {
+                    spacing = 10.0
+                    button("不保存", { response.accept(EditorSaveChoice.Discard) }) {
+                        variant = ButtonVariant.Ghost
+                    }
+                    item(empty()) {
+                        grow = 1.0;
+                        basis = FlexBasis.Fixed(0.0)
+                    }
+                    button("取消", { response.cancel() }) { variant = ButtonVariant.Outline }
+                    button("保存…", { response.accept(EditorSaveChoice.Save) }) {
+                        style = editorPrimaryStyle()
+                    }
+                }
+            }
+        ) {
+            padding = Some(Insets.all(24.0))
+            style { background(Some(Paint(editorChrome))) }
+        }
+    }
+}

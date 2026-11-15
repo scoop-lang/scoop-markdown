@@ -73,6 +73,8 @@ public class MarkdownSourceHost public constructor(
             event -> mdSourceEvent(this, context, event)
         }
     public val focus = scope.focusTarget(area, FocusOptions(visibility = FocusVisibility.Always))
+    private val textCursor = MdTextCursor(scope, area)
+    internal val scrollbars = MdScrollbars(scope, scroll, active, initialStyle.text.fontSize)
     internal val blink =
         scope.createDeadline {
             if (!closed && area.isFocusActive && window.isVisible && !window.isOccluded) {
@@ -95,6 +97,7 @@ public class MarkdownSourceHost public constructor(
                 }
             }
         area.scope.enabled = active
+        scrollbars.update(active, style.text.fontSize)
     }
 
     public val state: MarkdownEditorState get() {
@@ -242,6 +245,7 @@ public class MarkdownSourceHost public constructor(
             }
         this.folding?.revealSelection()
         area.scope.enabled = active
+        scrollbars.update(active, style.text.fontSize)
         area.textInput = active && !options.readOnly
         if (!ownsOtherComposition()) {
             val previousInput = input.inputState.revision
@@ -406,6 +410,8 @@ public class MarkdownSourceHost public constructor(
         failure = mdCleanup(failure) { input.close() }
         failure = mdCleanup(failure) { blink.close() }
         failure = mdCleanup(failure) { dragTimer.close() }
+        failure = mdCleanup(failure) { textCursor.close() }
+        failure = mdCleanup(failure) { scrollbars.close() }
         failure = mdCleanup(failure) { focus.close() }
         failure = mdCleanup(failure) { area.close() }
         failure = mdCleanup(failure) { viewport.close() }
@@ -439,6 +445,7 @@ internal fun mdThrow(failure: Throwable?) {
 internal fun mdSourceChanged(host: MarkdownSourceHost, change: MarkdownChange) {
     if (host.closed)
         return
+    host.maximumWidth = 0.0
     host.assistance.changed(change)
     host.region?.advance(change)
     val estimate = mdSourceEstimate(host.style)

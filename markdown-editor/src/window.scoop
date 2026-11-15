@@ -3,27 +3,28 @@ package scoop.examples.markdown.editor
 import scoop.graphics.*
 import scoop.graphics.text.*
 import scoop.markdown.*
-import scoop.platform.fs.*
-import scoop.platform.fs.Path as FilePath
 import scoop.surface.*
 import scoop.ui.*
 import scoop.ui.component.*
 import scoop.ui.component.row as editorRow
 import scoop.ui.component.column as editorColumn
 import scoop.ui.component.frame as editorFrame
-import scoop.text.split
 import scoop.ui.markdown.*
 import scoop.ui.style.*
 import scoop.window.*
 
 internal class EditorWindow(
-    internal val editor: MarkdownEditorState,
-    internal val documentFile: FilePath,
-    internal val documentUri: String,
+    internal val documents: EditorApplication,
+    internal val session: EditorSession,
     workers: CoroutineExecutor,
     renderers: List<MarkdownImageRenderer>,
     scope: ComponentScope
 ): Component(scope) {
+    internal val document = session.document
+    internal val editor = document.editor
+    internal val files = scope.fileDialogController()
+    internal val confirmation =
+        scope.nativeDialogController<EditorSaveChoice>(DialogTarget.Owner(scope.nativeWindow))
     internal val parser =
         scope.resource { MarkdownParseController(editor, workers, scope.application.proxy()) }
     internal val images =
@@ -43,8 +44,12 @@ internal class EditorWindow(
     internal var pendingMore: (() -> Unit)? = None
     internal val outlineScroll = ScrollState()
     private val nativeFrame = state(WindowFrame.System(WindowContentMode.Standard))
-    internal val displayPath = documentFile.toOsString().decodeUtf8()
-    internal val fileName: String = editorFileName(displayPath)
+    internal val displayPath: String get() = document.displayPath
+    internal val fileName: String get() = document.name
+
+    init {
+        session.root = Some(this)
+    }
 
     private val sourceStyle =
         MarkdownSourceStyle(
@@ -79,33 +84,27 @@ internal class EditorWindow(
             ShortcutScope(
                 scope.input,
                 [
+                    shortcutBinding(editorShortcut("n"), { documents.newDocument() }),
+                    shortcutBinding(editorShortcut("o"), { documents.root?.openFile(Some(this)) }),
                     shortcutBinding(editorShortcut("s"), { save() }),
-                    shortcutBinding(editorShortcut("q"), { quit() })
+                    shortcutBinding(editorShortcut("s", true), { save(true) }),
+                    shortcutBinding(editorShortcut("w"), { documents.requestClose(session) }),
+                    shortcutBinding(editorShortcut("q"), { documents.quit() })
                 ]
             )
         }
-    }
-
-    internal fun quit() {
-        scope.application.requestExit()
-    }
-
-    internal fun save() {
-        try {
-            editor.acceptComposition()
-            val saved = editor.snapshot
-            documentFile.writeText(saved.toMarkdown())
-            editor.markSaved(saved.revision)
-            message.value = ""
-        } catch (error: Exception) {
-            message.value = error.message ?: "保存失败"
-        }
         view.requestFocus(view.activePane)
+    }
+
+    public override fun onUnmount() {
+        session.root = None
     }
 
     internal fun setMode(mode: MarkdownEditorMode) {
-        view.setMode(mode)
-        view.requestFocus(view.activePane)
+        perform("无法切换编辑模式") {
+            view.setMode(mode)
+            view.requestFocus(view.activePane)
+        }
     }
 
     private fun restoreDocumentFocus() {
@@ -117,7 +116,7 @@ internal class EditorWindow(
         val action = pendingFormat
         pendingFormat = None
         when (action) {
-            case Some(val run) -> run()
+            case Some(val run) -> perform("无法应用格式", run)
             case None -> view.requestFocus(view.activePane)
         }
     }
@@ -126,7 +125,7 @@ internal class EditorWindow(
         val action = pendingMore
         pendingMore = None
         when (action) {
-            case Some(val run) -> run()
+            case Some(val run) -> perform("无法执行编辑操作", run)
             case None -> view.requestFocus(view.activePane)
         }
     }
@@ -142,7 +141,7 @@ internal class EditorWindow(
                     richStyle = Some(richStyle),
                     options = editorOptions,
                     images = Some(images),
-                    documentUri = documentUri,
+                    documentUri = owner.document.uri,
                     search = Some(search),
                     navigation = Some(navigation),
                     folding = Some(folding),
@@ -210,14 +209,9 @@ internal class EditorWindow(
             }
         return nativeWindowMenuBar(
             editorFrame(chrome) { style { background(Some(Paint(editorChrome))) } },
-            owner.applicationMenu()
+            editorApplicationMenu(documents, Some(owner))
         )
     }
-}
-
-internal fun editorFileName(path: String): String {
-    val parts = path.split("/")
-    return parts[parts.size - 1L]
 }
 
 internal fun editorModeName(mode: MarkdownEditorMode): String =

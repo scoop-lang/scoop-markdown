@@ -1,0 +1,65 @@
+package scoop.examples.markdown.editor
+
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.window.*
+
+/** Keeps File commands available on macOS when no document window is open. */
+internal class EditorApplicationView(
+    private val documents: EditorApplication,
+    scope: ApplicationScope
+): ApplicationComponent(scope) {
+    val files = scope.fileDialogController()
+
+    init {
+        documents.root = Some(this)
+    }
+
+    fun openFile(owner: EditorWindow? = None) {
+        if (!documents.canOpen)
+            return
+        val target =
+            when (owner) {
+                case Some(val window) -> DialogTarget.Owner(window.scope.nativeWindow)
+                case None -> DialogTarget.Application
+            }
+        files.openFile(
+            target,
+            {
+                result -> when (result) {
+                    case Accepted(val path) -> documents.open(path, owner)
+                    case Cancelled(_) -> when (owner) {
+                        case Some(val window) -> if (window.scope.isMounted)
+                            window.view.requestFocus(window.view.activePane)
+                        case None -> Unit
+                    }
+                    case Failed(val error) -> documents.report(
+                        "无法打开文件选择器：" + (error.message ?: "系统操作失败"),
+                        owner
+                    )
+                }
+            },
+            OpenFileOptions(
+                title = Some("打开 Markdown 文稿"),
+                initialDirectory =
+                    when (owner) {
+                        case Some(val window) -> when (window.document.file) {
+                            case Some(val path) -> path.parent
+                            case None -> None
+                        }
+                        case None -> None
+                    }
+            )
+        )
+    }
+
+    public override fun render(): ApplicationContent =
+        ApplicationContent(
+            [
+                nativeApplicationMenuBar(
+                    editorApplicationMenu(documents),
+                    ViewKey.Text("application-menu")
+                )
+            ]
+        )
+}

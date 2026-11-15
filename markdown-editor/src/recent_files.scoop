@@ -1,0 +1,61 @@
+package scoop.examples.markdown.editor
+
+import scoop.json.*
+import scoop.collections.contains
+import scoop.platform.fs.*
+import scoop.platform.system.*
+import scoop.ui.state
+
+/** Recent files are application preferences, independent of open document state. */
+internal class EditorRecentFiles(private val storage: Path?) {
+    private val value = state<Array<Path>>([])
+    val entries: Array<Path> get() = value.value
+
+    fun load() {
+        val path = storage ?: return
+        val text =
+            try {
+                path.readText()
+            } catch (error: PlatformException) {
+                if (error.kind == PlatformErrorKind.NotFound)
+                    return
+                throw error
+            }
+        val paths = ArrayList<Path>()
+        for (entry in Json.parse(text).elements()) {
+            val file = editorAbsolutePath(Path.fromString(entry.asString()))
+            if (!paths.contains(file))
+                paths.add(file)
+            if (paths.size == 10L)
+                break
+        }
+        value.value = paths.toArray()
+    }
+
+    fun remember(path: Path) {
+        val file = editorAbsolutePath(path)
+        val paths = ArrayList<Path>()
+        paths.add(file)
+        for (previous in value.value) {
+            if (previous != file && paths.size < 10L)
+                paths.add(previous)
+        }
+        value.value = paths.toArray()
+        persist()
+    }
+
+    fun clear() {
+        value.value = []
+        persist()
+    }
+
+    private fun persist() {
+        val path = storage ?: return
+        val entries = ArrayList<JsonValue>()
+        for (file in value.value)
+            entries.add(JsonValue.fromString(file.decodeUtf8()))
+        val text = Json.stringify(JsonValue.fromArray(entries))
+        path.parent?.createDirectories()
+        path.writeText(text + "\n")
+    }
+}

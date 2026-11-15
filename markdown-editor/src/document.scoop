@@ -1,0 +1,60 @@
+package scoop.examples.markdown.editor
+
+import scoop.markdown.MarkdownDocument
+import scoop.platform.env.currentDirectory
+import scoop.platform.fs.*
+import scoop.ui.state
+import scoop.ui.markdown.MarkdownEditorState
+import scoop.url.url
+
+private struct EditorFileLocation(val path: Path, val uri: String)
+
+/** A document's location changes only after its current snapshot has been written. */
+internal class EditorDocument(
+    text: String = "",
+    file: Path? = None,
+    private val untitledName: String = "未命名"
+): Closeable {
+    val editor = MarkdownEditorState(MarkdownDocument.fromText(text))
+    private val location =
+        state<EditorFileLocation?>(
+            when (file) {
+                case Some(val path) -> Some(editorFileLocation(path))
+                case None -> None
+            }
+        )
+    val file: Path? get() = location.value?.path
+    val uri: String get() = location.value?.uri ?: ""
+    val name: String get() {
+        val current = file ?: return untitledName
+        return current.fileName?.display() ?: untitledName
+    }
+    val displayPath: String get() = file?.display() ?: "尚未保存到文件"
+
+    fun save(destination: Path) {
+        val next = editorFileLocation(destination)
+        editor.acceptComposition()
+        val snapshot = editor.snapshot
+        next.path.writeText(snapshot.toMarkdown())
+        location.value = Some(next)
+        editor.markSaved(snapshot.revision)
+    }
+
+    public override fun close() {
+        editor.close()
+    }
+}
+
+internal fun editorAbsolutePath(path: Path): Path =
+    currentDirectory().resolve(path).normalizeLexically()
+
+private fun editorFileLocation(path: Path): EditorFileLocation {
+    val absolute = editorAbsolutePath(path)
+    val uri =
+        url {
+            scheme = Some("file")
+            host("")
+            path(editorUrlPath(absolute))
+        }.toString()
+    return EditorFileLocation(absolute, uri)
+}

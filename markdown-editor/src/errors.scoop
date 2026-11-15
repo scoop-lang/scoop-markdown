@@ -1,0 +1,27 @@
+package scoop.examples.markdown.editor
+
+internal fun editorPrintFailure(error: Throwable) {
+    when (error as? Exception) {
+        case Some(val failure) -> eprintln("Scoop Markdown Editor: " + (failure.message ?: "操作失败"))
+        case None -> eprintln("Scoop Markdown Editor: unexpected application failure")
+    }
+    error.printStackTrace()
+    when (error as? ResourceUseException) {
+        case Some(val combined) -> {
+            editorPrintFailure(combined.primaryFailure)
+            editorPrintFailure(combined.cleanupFailure)
+        }
+        case None -> Unit
+    }
+}
+
+/** Keeps a rejected editing command local to its document window. */
+internal fun EditorWindow.perform(action: String, operation: () -> Unit) {
+    if (!scope.isMounted)
+        return
+    try {
+        operation()
+    } catch (error: Exception) {
+        documents.report(action + "：" + (error.message ?: "操作失败"), Some(this))
+    }
+}

@@ -1,0 +1,299 @@
+package scoop.examples.markdown.editor
+
+import scoop.platform.fs.*
+import scoop.ui.*
+import scoop.ui.markdown.*
+import scoop.window.*
+
+internal class EditorSession(val document: EditorDocument, val window: Window) {
+    var ui: UiWindow? = None
+    var root: EditorWindow? = None
+    var closing = false
+}
+
+/** Owns document windows; each mounted editor borrows exactly one document. */
+internal class EditorApplication(
+    private val workers: CoroutineExecutor,
+    private val renderers: List<MarkdownImageRenderer>,
+    private val startup: Path?
+): Closeable {
+    val recent = EditorRecentFiles(editorRecentFilePath())
+    val quitting = state(false)
+    private val sessions = ArrayList<EditorSession>()
+    private val generation = state(0L)
+    private var active: ActiveApplication? = None
+    private var host: UiHost? = None
+    internal var root: EditorApplicationView? = None
+    private var nextUntitled = 1L
+    private var failure: Throwable? = None
+
+    val windows: Array<EditorSession> get() {
+        generation.value
+        return sessions.toArray()
+    }
+    val canOpen: Boolean get() = !quitting.value && root?.files?.isPending != Some(true)
+
+    fun event(host: UiHost, active: ActiveApplication, event: ApplicationEvent) {
+        when (event) {
+            case Resumed -> {
+                when (this.active) {
+                    case Some(_) -> return
+                    case None -> Unit
+                }
+                this.active = Some(active)
+                this.host = Some(host)
+                host.attachApplication(active) { EditorApplicationView(this, it) }
+                var recentError: String? = None
+                try {
+                    recent.load()
+                } catch (error: Exception) {
+                    recentError = Some("无法读取最近文件记录：" + (error.message ?: "读取失败"))
+                }
+                when (startup) {
+                    case Some(val path) -> open(path)
+                    case None -> newDocument()
+                }
+                when (recentError) {
+                    case Some(val message) -> report(message)
+                    case None -> Unit
+                }
+            }
+            case ExitRequested(_) -> quit()
+            case Window(val id, WindowEvent.CloseRequested) -> {
+                if (!quitting.value) {
+                    val session = findWindow(id) ?: return
+                    requestClose(session)
+                }
+            }
+            case Window(val id, WindowEvent.Destroyed) -> {
+                var index = 0L
+                while (index < sessions.size) {
+                    val session = sessions[index]
+                    if (session.window.id == id) {
+                        sessions.removeAt(index)
+                        session.document.close()
+                        generation.value += 1L
+                        if (quitting.value)
+                            closeNext()
+                        break
+                    }
+                    index += 1L
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    fun newDocument(): EditorSession? {
+        if (quitting.value)
+            return None
+        val name =
+            if (nextUntitled == 1L)
+                "未命名"
+            else
+                "未命名 " + nextUntitled.toString()
+        nextUntitled += 1L
+        try {
+            return Some(attach(EditorDocument(untitledName = name)))
+        } catch (error: Exception) {
+            report("无法新建文档：" + (error.message ?: "窗口创建失败"))
+            if (sessions.size == 0L)
+                fail(error)
+            return None
+        }
+    }
+
+    fun open(path: Path, source: EditorWindow? = None) {
+        if (quitting.value)
+            return
+        try {
+            val file = editorAbsolutePath(path)
+            when (findFile(file)) {
+                case Some(val existing) -> focus(existing)
+                case None -> attach(EditorDocument(file.readText(), Some(file)))
+            }
+            remember(file, source)
+        } catch (error: Exception) {
+            if (sessions.size == 0L)
+                newDocument()
+            report("无法打开文件：" + (error.message ?: path.display()), source)
+        }
+    }
+
+    private fun attach(document: EditorDocument): EditorSession {
+        val title = document.name + " — Scoop Markdown"
+        val window =
+            try {
+                active!!.createWindow(
+                    windowAttributes {
+                        this.title = title
+                        size = LogicalSize(1180.0, 780.0)
+                        constraints = WindowSizeConstraints(min = Some(LogicalSize(860.0, 500.0)))
+                    }
+                )
+            } catch (error: Throwable) {
+                try {
+                    document.close()
+                } catch (cleanup: Throwable) {
+                    throw ResourceUseException(error, cleanup)
+                }
+                throw error
+            }
+        val session = EditorSession(document, window)
+        sessions.add(session)
+        generation.value += 1L
+        session.ui = host!!.attach(window, { EditorWindow(this, session, workers, renderers, it) })
+        when (session.ui) {
+            case Some(_) -> Unit
+            case None -> {
+                session.closing = true
+                window.requestDestroy()
+                throw IllegalStateException(Some("无法挂载文档窗口"))
+            }
+        }
+        return session
+    }
+
+    fun findFile(path: Path): EditorSession? {
+        val file = editorAbsolutePath(path)
+        for (session in sessions)
+            if (!session.closing && session.document.file == Some(file))
+                return Some(session)
+        return None
+    }
+
+    private fun findWindow(id: WindowId): EditorSession? {
+        for (session in sessions)
+            if (session.window.id == id)
+                return Some(session)
+        return None
+    }
+
+    fun focus(session: EditorSession) {
+        if (!session.closing) {
+            try {
+                session.window.requestMinimized(false)
+                session.window.setVisible(true)
+                session.window.requestFocus()
+            } catch (error: WindowException) {
+                report("无法激活窗口：" + (error.message ?: "系统操作失败"))
+            }
+        }
+    }
+
+    fun remember(path: Path, source: EditorWindow? = None) {
+        try {
+            recent.remember(path)
+        } catch (error: Exception) {
+            report("无法保存最近文件记录：" + (error.message ?: "写入失败"), source)
+        }
+    }
+
+    fun clearRecent(source: EditorWindow? = None) {
+        try {
+            recent.clear()
+        } catch (error: Exception) {
+            report("无法清除最近文件记录：" + (error.message ?: "写入失败"), source)
+        }
+    }
+
+    fun report(message: String, source: EditorWindow? = None) {
+        eprintln(message)
+        val target =
+            when (source) {
+                case Some(val window) -> if (window.scope.isMounted)
+                    source
+                else
+                    None
+                case None -> if (sessions.size > 0L)
+                    sessions[sessions.size - 1L].root
+                else
+                    None
+            }
+        when (target) {
+            case Some(val window) -> window.message.value = message
+            case None -> Unit
+        }
+    }
+
+    fun requestClose(session: EditorSession) {
+        if (session.closing)
+            return
+        session.root?.confirmClose {
+            accepted -> if (accepted) {
+                session.closing = true
+                var error: Throwable? = None
+                try {
+                    session.ui?.close()
+                } catch (failure: Throwable) {
+                    error = Some(failure)
+                }
+                try {
+                    session.window.requestDestroy()
+                } catch (failure: Throwable) {
+                    error =
+                        when (error) {
+                            case Some(val first) -> Some(ResourceUseException(first, failure))
+                            case None -> Some(failure)
+                        }
+                }
+                when (error) {
+                    case Some(val failure) -> fail(failure)
+                    case None -> Unit
+                }
+            } else {
+                quitting.value = false
+            }
+        }
+    }
+
+    fun quit() {
+        if (quitting.value || root?.files?.isPending == Some(true))
+            return
+        quitting.value = true
+        closeNext()
+    }
+
+    private fun closeNext() {
+        if (sessions.size == 0L)
+            active?.requestExit()
+        else
+            requestClose(sessions[0L])
+    }
+
+    fun fail(error: Throwable) {
+        failure =
+            when (failure) {
+                case Some(val first) -> Some(ResourceUseException(first, error))
+                case None -> Some(error)
+            }
+        active?.requestExit()
+    }
+
+    fun rethrowFailure() {
+        when (failure) {
+            case Some(val error) -> throw error
+            case None -> Unit
+        }
+    }
+
+    public override fun close() {
+        var error: Throwable? = None
+        for (session in sessions) {
+            try {
+                session.document.close()
+            } catch (failure: Throwable) {
+                error =
+                    when (error) {
+                        case Some(val first) -> Some(ResourceUseException(first, failure))
+                        case None -> Some(failure)
+                    }
+            }
+        }
+        sessions.clear()
+        when (error) {
+            case Some(val failure) -> throw failure
+            case None -> Unit
+        }
+    }
+}

@@ -45,7 +45,7 @@ internal class EditorTargetDialog {
                 visible.value = false
             else
                 error.value = "文稿或选区已改变，请关闭后重新打开。"
-        } catch (failure: IllegalArgumentException) {
+        } catch (failure: Exception) {
             error.value = failure.message ?: "无法更新链接或图片。"
         }
     }

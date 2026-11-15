@@ -1,0 +1,59 @@
+package scoop.examples.markdown.editor
+
+import scoop.platform.fs.*
+import scoop.test.*
+
+@Test
+private class EditorRecentFileTests {
+    @Test
+    fun remembersTenDistinctFilesInMostRecentOrderAcrossLaunches() {
+        val directory = createTempDirectory(prefix = "markdown-editor-recent-")
+        try {
+            val storage = directory.resolve(Path.fromString("preferences/recent.json"))
+            val recent = EditorRecentFiles(Some(storage))
+            recent.load()
+            assertEquals(0L, recent.entries.size)
+            for (index in 0L ..< 12L) {
+                val file = directory.resolve(Path.fromString(index.toString() + ".md"))
+                file.writeText(index.toString())
+                recent.remember(file)
+            }
+            val repeated = directory.resolve(Path.fromString("7.md"))
+            recent.remember(directory.resolve(Path.fromString("./7.md")))
+            assertEquals(10L, recent.entries.size)
+            assertEquals(repeated, recent.entries[0L])
+            assertEquals(directory.resolve(Path.fromString("11.md")), recent.entries[1L])
+            val reopened = EditorRecentFiles(Some(storage))
+            reopened.load()
+            assertEquals(recent.entries.size, reopened.entries.size)
+            for (index in 0L ..< recent.entries.size)
+                assertEquals(recent.entries[index], reopened.entries[index])
+            reopened.clear()
+            val cleared = EditorRecentFiles(Some(storage))
+            cleared.load()
+            assertEquals(0L, cleared.entries.size)
+            assertEquals("7", repeated.readText())
+            assertEquals("0", directory.resolve(Path.fromString("0.md")).readText())
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun recentPathEncodingPreservesUnicodeAndSpaces() {
+        val directory = createTempDirectory(prefix = "markdown-editor-paths-")
+        try {
+            val storage = directory.resolve(Path.fromString("recent.json"))
+            val file = directory.resolve(Path.fromString("文稿 notes.md"))
+            file.writeText("# Recent file\n")
+            val recent = EditorRecentFiles(Some(storage))
+            recent.remember(file)
+            val reopened = EditorRecentFiles(Some(storage))
+            reopened.load()
+            assertEquals(file, reopened.entries[0L])
+            assertEquals("# Recent file\n", reopened.entries[0L].readText())
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+}
