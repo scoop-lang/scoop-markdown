@@ -1,0 +1,376 @@
+package scoop.tests.markdown.source
+
+import scoop.concurrent.multiThreadExecutor
+import scoop.graphics.*
+import scoop.graphics.native.withSkiaCanvas
+import scoop.markdown.*
+import scoop.platform.time.MonotonicTimeSource
+import scoop.surface.FrameSubmission
+import scoop.test.*
+import scoop.tests.graphics.readNativePixel
+import scoop.tests.surface.*
+import scoop.tests.window.*
+import scoop.text.repeat
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.ui.markdown.*
+import scoop.window.*
+
+@Test
+private class MarkdownViewportWindowTests {
+    @Test
+    fun scrollbarsAndSystemCursorsFollowSourcePreviewAndRichViewports() {
+        val app = Application()
+        val workers =
+            multiThreadExecutor {
+                workers = 1;
+                blocking { threads = 1 }
+            }
+        val probe = MdViewportProbe(workers, app.proxy())
+        try {
+            UiHost { host, active, event -> probe.event(host, active, event) }.use {
+                host -> app.run(host)
+            }
+            assertTrue(probe.finished)
+        } catch (failure: Throwable) {
+            println(
+                "Viewport kind=" + probe.kind.toString() + " step=" + probe.step.value.toString()
+            )
+            throw failure
+        } finally {
+            probe.close()
+            workers.close()
+        }
+    }
+}
+
+private class MdViewportProbe(workers: CoroutineExecutor, proxy: ApplicationProxy): Closeable {
+    val original = ("Long source line with selectable text. ".repeat(24L) + "\n\n").repeat(60L)
+    val editor = MarkdownEditorState(MarkdownDocument.fromText(original))
+    val parser = MarkdownParseController(editor, workers, proxy)
+    val sourceStyle = MarkdownSourceStyle()
+    val previewStyle = MarkdownPreviewStyle()
+    val step = state(0)
+    var kind = 0
+    var enabled = true
+    var mounted = true
+    var field: MdViewportField? = None
+    var window: Window? = None
+    var frames: FrameProbe? = None
+    var accepted = -1
+    var beforeFrame = 0L
+    var waiting = false
+    var finished = false
+    var selection = editor.selection
+    val width = 400.0
+    val height = 240.0
+
+    fun event(host: UiHost, active: ActiveApplication, event: ApplicationEvent) {
+        when (event) {
+            case Resumed -> {
+                val windowSize = LogicalSize(width, height)
+                val native =
+                    active.createWindow(
+                        windowAttributes {
+                            title = "Scoop Markdown viewport verification"
+                            size = windowSize
+                        }
+                    )
+                window = Some(native)
+                frames = Some(observeFrames(native))
+                native.setWindowLevel(WindowLevel.AlwaysOnTop)
+                native.requestFocus()
+                host.attach(native, { scope -> MdViewportRoot(this, scope) })
+                parser.start()
+                native.createDeadline {
+                    fail(
+                        Some("Viewport timeout at " + kind.toString() + ":" + step.value.toString())
+                    )
+                }.schedule(MonotonicTimeSource.markNow() + Duration.seconds(45L))
+            }
+            case AboutToWait -> {
+                if (!waiting && ready()) {
+                    waiting = true
+                    active.proxy().post {
+                        owner ->
+                        waiting = false
+                        if (ready())
+                            advance(owner)
+                    }
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun ready(): Boolean {
+        if (!window!!.isFocused || window!!.isOccluded || frames!!.snapshot().required)
+            return false
+        if (!mounted)
+            return frames!!.snapshot().presentations > beforeFrame
+        return accepted ==
+            step.value &&
+            parser.current?.snapshot?.revision ==
+            Some(editor.snapshot.revision)
+    }
+
+    private fun next(action: () -> Unit = {}) {
+        beforeFrame = frames!!.snapshot().presentations
+        action()
+        step.value += 1
+    }
+
+    private fun move(x: Double, y: Double) {
+        assertTrue(moveSurfacePointer(window!!, x, y))
+    }
+
+    private fun button(x: Double, y: Double, down: Boolean) {
+        mdNativeView(window!!) {
+            view -> @Unsafe
+            {
+                assertEquals(0, nativeEditorPointer(view, x, y, down, 1, false))
+            }
+        }
+    }
+
+    private fun cursor(text: Boolean) {
+        assertTrue(
+            mdNativeView(window!!) {
+                view -> @Unsafe
+                {
+                    return@mdNativeView nativeEditorCursor(view, text)
+                }
+            }
+        )
+    }
+
+    private fun advance(active: ActiveApplication) {
+        val scroll = field!!.scroll
+        when (step.value) {
+            case 0 -> {
+                assertTrue(scroll.maximum.y > height)
+                assertTrue(field!!.barPainted)
+                selection = editor.selection
+                next { move(40.0, 40.0) }
+            }
+            case 1 -> {
+                cursor(true)
+                next {
+                    button(width - 6.0, height - 40.0, true)
+                    button(width - 6.0, height - 40.0, false)
+                }
+            }
+            case 2 -> {
+                cursor(false)
+                assertTrue(scroll.offset.y >= height * 0.5)
+                assertEquals(selection, editor.selection)
+                next { scroll.scrollTo(Point(0.0, 0.0)) }
+            }
+            case 3 -> next { button(width - 6.0, 14.0, true) }
+            case 4 -> next { move(width - 6.0, height - 50.0) }
+            case 5 -> {
+                cursor(false)
+                assertTrue(scroll.offset.y > height)
+                assertEquals(selection, editor.selection)
+                next { button(width - 6.0, height - 50.0, false) }
+            }
+            case 6 -> next {
+                if (kind == 0) {
+                    assertTrue(scroll.maximum.x > width)
+                    button(width - 40.0, height - 6.0, true)
+                    button(width - 40.0, height - 6.0, false)
+                }
+            }
+            case 7 -> {
+                if (kind == 0)
+                    assertTrue(scroll.offset.x > 0.0)
+                assertEquals(selection, editor.selection)
+                next { move(40.0, 40.0) }
+            }
+            case 8 -> {
+                cursor(true)
+                next { enabled = false }
+            }
+            case 9 -> {
+                cursor(false)
+                next { enabled = true }
+            }
+            case 10 -> {
+                cursor(true)
+                next {
+                    editor.replace(MarkdownRange(0L, editor.snapshot.byteLength), "Short")
+                    scroll.scrollTo(Point(0.0, 0.0))
+                }
+            }
+            case 11 -> {
+                assertEquals(Point(0.0, 0.0), scroll.maximum)
+                assertFalse(field!!.barPainted)
+                next { move(width - 6.0, 14.0) }
+            }
+            case 12 -> {
+                cursor(true)
+                next { mounted = false }
+            }
+            case 13 -> {
+                cursor(false)
+                assertTrue(field!!.retired)
+                if (kind < 2) {
+                    editor.replace(MarkdownRange(0L, editor.snapshot.byteLength), original)
+                    kind += 1
+                    accepted = -1
+                    mounted = true
+                    step.value = 0
+                } else {
+                    finished = true
+                    active.requestExit()
+                }
+            }
+            else -> fail(Some("Unexpected viewport test step"))
+        }
+    }
+
+    public override fun close() {
+        frames?.close()
+        parser.close()
+        editor.close()
+    }
+}
+
+private class MdViewportRoot(val probe: MdViewportProbe, scope: ComponentScope): Component(scope) {
+    public override fun render(): View {
+        val step = probe.step.value
+        probe.parser.status
+        return if (probe.mounted)
+            element(
+                step,
+                { props, owner -> MdViewportField(probe, props, owner) },
+                key = ViewKey.Number(probe.kind.toLong())
+            )
+        else
+            empty()
+    }
+}
+
+private enum MdViewportHost {
+    Source(MarkdownSourceHost), Preview(MarkdownPreviewHost), Rich(MarkdownRichHost)
+}
+
+private enum MdViewportLayout {
+    Source(MarkdownSourceMeasurement), Preview(MarkdownPreviewMeasurement)
+    val metrics: LayoutMetrics get() =
+        when (this) {
+            case Source(val value) -> value.metrics
+            case Preview(val value) -> value.metrics
+        }
+    fun close() {
+        when (this) {
+            case Source(val value) -> value.close()
+            case Preview(val value) -> value.close()
+        }
+    }
+}
+
+private class MdViewportField(
+    val probe: MdViewportProbe,
+    val step: Props<Int>,
+    scope: ComponentScope
+): Element<MdViewportLayout>(scope) {
+    private val host =
+        when (probe.kind) {
+            case 0 -> MdViewportHost.Source(
+                scope.resource { MarkdownSourceHost(scope, probe.editor) }
+            )
+            case 1 -> MdViewportHost.Preview(
+                scope.resource { MarkdownPreviewHost(scope, probe.parser) }
+            )
+            else -> MdViewportHost.Rich(scope.resource { MarkdownRichHost(scope, probe.parser) })
+        }
+    var barPainted = false
+    var retired = false
+    val scroll: ScrollState get() =
+        when (host) {
+            case Source(val value) -> value.scroll
+            case Preview(val value) -> value.scroll
+            case Rich(val value) -> value.scroll
+        }
+    public override fun onMount() {
+        probe.field = Some(this)
+        update()
+    }
+    public override fun update(): UiInvalidation {
+        when (host) {
+            case Source(val value) -> value.update(
+                probe.editor,
+                probe.sourceStyle,
+                MarkdownSourceOptions(wrap = false, enabled = probe.enabled)
+            )
+            case Preview(val value) -> value.update(
+                probe.parser,
+                probe.previewStyle,
+                MarkdownPreviewOptions(enabled = probe.enabled)
+            )
+            case Rich(val value) -> value.update(
+                probe.parser,
+                probe.previewStyle,
+                MarkdownPreviewOptions(enabled = probe.enabled)
+            )
+        }
+        return UiInvalidation.Layout
+    }
+    public override fun measure(context: MeasureContext, constraints: Constraints): LayoutResult<
+        MdViewportLayout
+    > {
+        val measured =
+            when (host) {
+                case Source(val value) -> MdViewportLayout.Source(
+                    value.measure(context, constraints)
+                )
+                case Preview(val value) -> MdViewportLayout.Preview(
+                    value.measure(context, constraints)
+                )
+                case Rich(val value) -> MdViewportLayout.Preview(
+                    value.measure(context, constraints)
+                )
+            }
+        return LayoutResult(measured.metrics, measured, { measured.close() })
+    }
+    public override fun scene(context: SceneContext, measured: MdViewportLayout) {
+        when ((host, measured)) {
+            case(
+                MdViewportHost.Source(val value),
+                MdViewportLayout.Source(val layout)
+            ) -> value.scene(context, layout)
+            case(
+                MdViewportHost.Preview(val value),
+                MdViewportLayout.Preview(val layout)
+            ) -> value.scene(context, layout)
+            case(
+                MdViewportHost.Rich(val value),
+                MdViewportLayout.Preview(val layout)
+            ) -> value.scene(context, layout)
+            else -> fail(Some("Mismatched viewport test layout"))
+        }
+        context.draw {
+            paint -> @Unsafe
+            {
+                barPainted =
+                    paint.canvas.withSkiaCanvas {
+                        canvas -> @Unsafe
+                        {
+                            return@withSkiaCanvas readNativePixel(canvas, probe.width - 6.0, 8.0) %
+                                256L <
+                                235L
+                        }
+                    }
+            }
+        }
+        val ticket = step.value
+        context.onFrameComplete {
+            frame -> if (frame.submission == FrameSubmission.Accepted)
+                probe.accepted = ticket
+        }
+    }
+    public override fun onUnmount() {
+        retired = true
+    }
+}

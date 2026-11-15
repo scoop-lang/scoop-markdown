@@ -2,6 +2,17 @@ package scoop.examples.markdown.editor
 
 import scoop.window.*
 import scoop.window.platform.macos.*
+import scoop.platform.env.homeDirectory
+import scoop.platform.fs.Path
+
+internal fun editorLastWindowPolicy(): LastWindowPolicy = LastWindowPolicy.KeepRunning
+
+internal fun editorRecentFilePath(): Path? =
+    homeDirectory()?.resolve(
+        Path.fromString("Library/Application Support/Scoop Markdown Editor/recent-files.json")
+    )
+
+internal fun editorUrlPath(path: Path): String = path.decodeUtf8()
 
 internal fun configureEditorWindow(window: Window): WindowFrame {
     window.setMacOSTitlebar(TitlebarOptions(transparent = true, titleHidden = true))

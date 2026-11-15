@@ -24,7 +24,7 @@
 ~/.scoop/bin/scoop --sysroot ~/.scoop run markdown-editor --release -- /absolute/path/document.md
 ```
 
-编辑器打开已有的 Markdown 文件，修改后用 Cmd-S 保存。macOS app 打包和窗口操作见[编辑器说明](markdown-editor/README.md)。
+编辑器不传文件参数时创建空白文档，也可打开已有 Markdown 文件；原生文件菜单支持新建、打开、最近文件、保存、另存为与关闭，未保存的文档在关闭前确认。macOS app 打包和窗口操作见[编辑器说明](markdown-editor/README.md)。
 
 无 UI 文件处理示例可以独立运行：
 

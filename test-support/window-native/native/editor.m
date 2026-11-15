@@ -177,6 +177,13 @@ int32_t scoop_window_test_editor_interpret(void *pointer, int32_t scenario) {
   }
 }
 
+bool scoop_window_test_editor_cursor(void *pointer, bool text) {
+  SWView *view = (__bridge SWView *)pointer;
+  NSCursor *expected = text ? NSCursor.IBeamCursor : NSCursor.arrowCursor;
+  return [view.cursor isEqual:expected] &&
+         (!view.pointerInside || [NSCursor.currentCursor isEqual:expected]);
+}
+
 int32_t scoop_window_test_editor_pointer(void *pointer, double x, double y,
                                          bool pressed, int32_t clicks,
                                          bool shift) {

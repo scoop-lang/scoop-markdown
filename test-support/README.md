@@ -13,6 +13,8 @@
 
 原生辅助代码与头文件来自 Scoop 提交 [`5611938b4419ee3502145b8f8ca65e8d13d7b530`](https://github.com/scoop-lang/scoop/commit/5611938b4419ee3502145b8f8ca65e8d13d7b530)，改动为本地路径和必要格式化。更新 Scoop 工具链时，如窗口私有结构或探针接口变化，应同时同步对应探针与头文件。字体有独立许可，其余辅助代码沿用根目录的 MIT／Apache-2.0 双许可。
 
+本仓库另在 `window-native` 的编辑探针中增加 AppKit 光标读取，用于验证 Markdown 正文和滚动条之间的光标切换；不改变窗口私有结构声明或生产库接口。
+
 普通状态和文档测试通过两个库的 `scoop test` 执行。真实窗口测试按各自 README 运行：
 
 - [源码输入](../scoop.ui.markdown/tests-cones/source/README.md)

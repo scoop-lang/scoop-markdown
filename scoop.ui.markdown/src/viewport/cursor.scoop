@@ -1,0 +1,44 @@
+package scoop.ui.markdown
+
+import scoop.surface.*
+import scoop.ui.ComponentScope
+import scoop.window.*
+
+/** Follows the committed text area's hover route, independently of keyboard focus. */
+internal class MdTextCursor(scope: ComponentScope, private val area: InputArea): Closeable {
+    private val window = scope.nativeWindow
+    private var ownsCursor = false
+    private var closed = false
+    private val events =
+        area.scope.addEventHandler {
+            context,
+            event -> if (!closed && context.phase == RoutedPhase.Notification) {
+                when (event) {
+                    case Pointer(InputPointerEvent.Entered(_)) -> {
+                        if (window.state == WindowState.Open && area.scope.isInputAllowed) {
+                            window.setCursorIcon(CursorIcon.Text)
+                            ownsCursor = true
+                        }
+                    }
+                    case Pointer(InputPointerEvent.Left(_)) -> reset()
+                    else -> Unit
+                }
+            }
+        }
+
+    private fun reset() {
+        if (ownsCursor) {
+            ownsCursor = false
+            if (window.state == WindowState.Open)
+                window.setCursorIcon(CursorIcon.Default)
+        }
+    }
+
+    public override fun close() {
+        if (closed)
+            return
+        closed = true
+        events.close()
+        reset()
+    }
+}

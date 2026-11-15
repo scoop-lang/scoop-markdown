@@ -1,6 +1,28 @@
 package scoop.examples.markdown.editor
 
 import scoop.window.*
+import scoop.platform.env.*
+import scoop.platform.fs.Path
+
+internal fun editorLastWindowPolicy(): LastWindowPolicy = LastWindowPolicy.Exit
+
+internal fun editorRecentFilePath(): Path? {
+    val configured = environmentVariable("XDG_STATE_HOME")
+    val root =
+        when (configured) {
+            case Some(val value) -> {
+                val path = Path.fromOsString(value)
+                if (path.isAbsolute)
+                    Some(path)
+                else
+                    homeDirectory()?.resolve(Path.fromString(".local/state"))
+            }
+            case None -> homeDirectory()?.resolve(Path.fromString(".local/state"))
+        }
+    return root?.resolve(Path.fromString("scoop-markdown-editor/recent-files.json"))
+}
+
+internal fun editorUrlPath(path: Path): String = path.decodeUtf8()
 
 internal fun configureEditorWindow(window: Window): WindowFrame =
     WindowFrame.System(WindowContentMode.Standard)

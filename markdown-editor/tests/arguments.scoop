@@ -1,0 +1,59 @@
+package scoop.examples.markdown.editor
+
+import scoop.platform.fs.Path
+import scoop.test.*
+
+@Test
+private class EditorArgumentTests {
+    @Test
+    fun noFileIsRequiredWithOrWithoutRendererOptions() {
+        val empty = editorLaunchOptions(["markdown-editor"])
+        assertEquals(None, empty.file)
+        assertFalse(empty.help)
+        val renderers =
+            editorLaunchOptions(
+                [
+                    "markdown-editor",
+                    "--mermaid",
+                    "mmdc",
+                    "--mathjax",
+                    "node",
+                    "mathjax",
+                    "rsvg-convert"
+                ]
+            )
+        assertEquals(None, renderers.file)
+        assertEquals(Some(Path.fromString("mmdc")), renderers.mermaid)
+        assertEquals(
+            Some(
+                (
+                    Path.fromString("node"),
+                    Path.fromString("mathjax"),
+                    Path.fromString("rsvg-convert")
+                )
+            ),
+            renderers.mathjax
+        )
+    }
+
+    @Test
+    fun pathsAndInvalidArgumentsRemainExplicit() {
+        val options = editorLaunchOptions(["markdown-editor", "--mermaid", "mmdc", "文档.md"])
+        assertEquals(Some(editorAbsolutePath(Path.fromString("文档.md"))), options.file)
+        val dashed = editorLaunchOptions(["markdown-editor", "--", "-notes.md"])
+        assertEquals(Some(editorAbsolutePath(Path.fromString("-notes.md"))), dashed.file)
+        assertTrue(editorLaunchOptions(["markdown-editor", "--help"]).help)
+        assertFailsWith<IllegalArgumentException> {
+            editorLaunchOptions(["markdown-editor", "a.md", "b.md"])
+        }
+        assertFailsWith<IllegalArgumentException> {
+            editorLaunchOptions(["markdown-editor", "--mermaid"])
+        }
+        assertFailsWith<IllegalArgumentException> {
+            editorLaunchOptions(["markdown-editor", "--mathjax", "node"])
+        }
+        assertFailsWith<IllegalArgumentException> {
+            editorLaunchOptions(["markdown-editor", "--unknown"])
+        }
+    }
+}

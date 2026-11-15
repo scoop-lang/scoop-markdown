@@ -336,6 +336,7 @@ internal fun mdSceneSource(
                     }
             }
         )
+        host.scrollbars.scene(context, frame.scrollSnapshot)
         context.onFrameComplete {
             completion ->
             if (

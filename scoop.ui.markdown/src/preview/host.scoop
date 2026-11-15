@@ -74,10 +74,14 @@ public class MarkdownPreviewHost public constructor(
             event -> mdPreviewEvent(this, context, event)
         }
     public val focus = scope.focusTarget(area, FocusOptions(visibility = FocusVisibility.Always))
+    private val textCursor = MdTextCursor(scope, area)
+    internal val scrollbars =
+        MdScrollbars(scope, scroll, initialOptions.enabled, initialStyle.text.fontSize)
     init {
         options.check()
         area.scope.defaultAction = { context, event -> mdPreviewEvent(this, context, event) }
         area.scope.enabled = options.enabled
+        scrollbars.update(options.enabled, style.text.fontSize)
         observeImages()
     }
 
@@ -201,6 +205,7 @@ public class MarkdownPreviewHost public constructor(
         openLink = onOpenLink
         openSource = onSource
         area.scope.enabled = options.enabled
+        scrollbars.update(options.enabled, style.text.fontSize)
     }
 
     private fun observeImages() {
@@ -353,6 +358,8 @@ public class MarkdownPreviewHost public constructor(
         failure = mdCleanup(failure) { subscription.close() }
         failure = mdCleanup(failure) { imageLease?.close() }
         imageLease = None
+        failure = mdCleanup(failure) { textCursor.close() }
+        failure = mdCleanup(failure) { scrollbars.close() }
         failure = mdCleanup(failure) { focus.close() }
         failure = mdCleanup(failure) { area.close() }
         failure = mdCleanup(failure) { viewport.close() }

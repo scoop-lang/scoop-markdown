@@ -1,0 +1,136 @@
+package scoop.examples.markdown.editor
+
+import scoop.platform.fs.Path
+import scoop.platform.system.OsString
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.window.*
+
+internal fun EditorWindow.save(asNew: Boolean = false, finished: (Boolean) -> Unit = {}) {
+    if (files.isPending || confirmation.isPending) {
+        finished(false)
+        return
+    }
+    try {
+        editor.acceptComposition()
+    } catch (error: Exception) {
+        documents.report("无法保存当前编辑：" + (error.message ?: "操作失败"), Some(this))
+        finished(false)
+        return
+    }
+    val owner = this
+    val current = document.file
+    if (!asNew && current != None) {
+        writeDocument(current!!, finished)
+        return
+    }
+    files.saveFile(
+        DialogTarget.Owner(scope.nativeWindow),
+        {
+            result -> when (result) {
+                case Accepted(val path) -> owner.writeDocument(path, finished)
+                case Cancelled(_) -> {
+                    owner.restoreEditorFocus()
+                    finished(false)
+                }
+                case Failed(val error) -> {
+                    owner.documents.report(error.message ?: "无法打开保存面板", Some(owner))
+                    owner.restoreEditorFocus()
+                    finished(false)
+                }
+            }
+        },
+        SaveFileOptions(
+            title =
+                Some(
+                    if (asNew)
+                        "另存 Markdown 文稿"
+                    else
+                        "保存 Markdown 文稿"
+                ),
+            initialDirectory =
+                when (current) {
+                    case Some(val path) -> path.parent
+                    case None -> None
+                },
+            suggestedName =
+                when (current) {
+                    case Some(val path) -> path.fileName
+                    case None -> Some(OsString.fromString(fileName + ".md"))
+                }
+        )
+    )
+}
+
+private fun EditorWindow.writeDocument(path: Path, finished: (Boolean) -> Unit) {
+    val saved =
+        try {
+            when (documents.findFile(path)) {
+                case Some(val other) -> if (!(other === session)) {
+                    throw IllegalArgumentException(Some("这个文件已在另一个窗口中打开，请选择其他保存位置。"))
+                }
+                case None -> Unit
+            }
+            document.save(path)
+            true
+        } catch (error: Exception) {
+            documents.report("保存失败：" + (error.message ?: "无法写入文件"), Some(this))
+            false
+        }
+    if (saved) {
+        message.value = ""
+        perform("无法更新窗口标题") { scope.nativeWindow.setTitle(document.name + " — Scoop Markdown") }
+        documents.remember(path, Some(this))
+    }
+    restoreEditorFocus()
+    finished(saved)
+}
+
+private fun EditorWindow.restoreEditorFocus() {
+    perform("无法恢复编辑焦点") { view.requestFocus(view.activePane) }
+}
+
+internal fun EditorWindow.confirmClose(finished: (Boolean) -> Unit) {
+    if (files.isPending || confirmation.isPending) {
+        finished(false)
+        return
+    }
+    try {
+        editor.acceptComposition()
+    } catch (error: Exception) {
+        documents.report("无法确认当前修改：" + (error.message ?: "操作失败"), Some(this))
+        finished(false)
+        return
+    }
+    if (!editor.isDirty) {
+        finished(true)
+        return
+    }
+    val owner = this
+    confirmation.open(
+        { response, scope -> EditorSaveConfirmation(owner.fileName, response, scope) },
+        {
+            result -> when (result) {
+                case Accepted(val choice) -> when (choice) {
+                    case Save -> owner.save(finished = finished)
+                    case Discard -> finished(true)
+                }
+                case Cancelled(_) -> {
+                    owner.restoreEditorFocus()
+                    finished(false)
+                }
+                case Failed(val error) -> {
+                    owner.documents.report(error.message ?: "无法显示保存确认", Some(owner))
+                    owner.restoreEditorFocus()
+                    finished(false)
+                }
+            }
+        },
+        attributes =
+            windowAttributes {
+                title = "保存修改"
+                size = LogicalSize(480.0, 210.0)
+                resizable = false
+            }
+    )
+}

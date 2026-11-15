@@ -1,0 +1,108 @@
+package scoop.examples.markdown.editor
+
+import scoop.platform.fs.*
+import scoop.platform.system.PlatformException
+import scoop.test.*
+import scoop.text.contains
+import scoop.text.startsWith
+import scoop.ui.markdown.MarkdownSourceInput
+import scoop.window.*
+
+@Test
+private class EditorDocumentTests {
+    @Test
+    fun untitledDocumentsSaveAndSaveAsWithoutSharingHistory() {
+        val directory = createTempDirectory(prefix = "markdown-editor-document-")
+        try {
+            EditorDocument().use {
+                document -> EditorDocument().use {
+                    other ->
+                    assertEquals("", document.editor.snapshot.toMarkdown())
+                    assertEquals(None, document.file)
+                    assertEquals("未命名", document.name)
+                    assertFalse(document.editor.isDirty)
+                    document.editor.replaceSelection("# 新文档\n\n正文\n")
+                    assertTrue(document.editor.isDirty)
+                    assertEquals("", other.editor.snapshot.toMarkdown())
+                    assertFalse(other.editor.canUndo)
+                    val first = directory.resolve(Path.fromString("first 文档.md"))
+                    document.save(first)
+                    assertEquals("# 新文档\n\n正文\n", first.readText())
+                    assertEquals(Some(first), document.file)
+                    assertEquals("first 文档.md", document.name)
+                    assertTrue(document.uri.startsWith("file:"))
+                    assertTrue(document.uri.contains("%20"))
+                    assertFalse(document.editor.isDirty)
+                    document.editor.replaceSelection("后记")
+                    val second = directory.resolve(Path.fromString("second.md"))
+                    document.save(second)
+                    assertEquals(Some(second), document.file)
+                    assertEquals("second.md", document.name)
+                    assertEquals("# 新文档\n\n正文\n", first.readText())
+                    assertEquals("# 新文档\n\n正文\n后记", second.readText())
+                    assertTrue(document.editor.canUndo)
+                }
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun failedSavePreservesTheCurrentLocationAndDirtyRevision() {
+        val directory = createTempDirectory(prefix = "markdown-editor-save-")
+        try {
+            val existing = directory.resolve(Path.fromString("existing.md"))
+            existing.writeText("before")
+            EditorDocument(existing.readText(), Some(existing)).use {
+                document ->
+                val uri = document.uri
+                val saved = document.editor.savedRevision
+                document.editor.replaceSelection("after ")
+                assertFailsWith<PlatformException> {
+                    document.save(directory.resolve(Path.fromString("missing/document.md")))
+                }
+                assertEquals(Some(existing), document.file)
+                assertEquals(uri, document.uri)
+                assertEquals(saved, document.editor.savedRevision)
+                assertTrue(document.editor.isDirty)
+                assertEquals("before", existing.readText())
+                assertEquals("after before", document.editor.snapshot.toMarkdown())
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun savingAcceptsTheCurrentCompositionBeforeWriting() {
+        val directory = createTempDirectory(prefix = "markdown-editor-ime-")
+        try {
+            EditorDocument().use {
+                document -> MarkdownSourceInput(document.editor).use {
+                    input ->
+                    input.apply(
+                        TextInputBatch(
+                            Some(input.inputState.revision),
+                            [
+                                TextInputOperation.Preedit(
+                                    "中文",
+                                    None,
+                                    TextReplacement.CurrentSelection
+                                )
+                            ]
+                        )
+                    )
+                    assertTrue(document.editor.isComposing)
+                    val file = directory.resolve(Path.fromString("composition.md"))
+                    document.save(file)
+                    assertFalse(document.editor.isComposing)
+                    assertFalse(document.editor.isDirty)
+                    assertEquals("中文", file.readText())
+                }
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+}

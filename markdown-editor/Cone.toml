@@ -4,6 +4,17 @@ group = "scoop.examples"
 name = "markdown-editor"
 version = "0.1.0"
 kind = "executable"
+description = "Native Markdown editor with source, rich text and side-by-side views"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/scoop-lang/scoop-markdown"
+readme = "README.md"
+
+[windows]
+subsystem = "gui"
+rc = "packaging/windows.rc"
+
+[bundle]
+config = "Bundle.toml"
 
 [[sources]]
 path = "src"
@@ -35,3 +46,7 @@ when = { os = "linux", env = "gnu" }
 "scoop:scoop.window" = "0.1.0"
 "scoop:scoop.surface" = "0.1.0"
 "scoop:scoop.url" = "0.1.0"
+"scoop:scoop.json" = "0.1.0"
+
+[test-dependencies]
+"scoop:scoop.test" = "0.1.0"

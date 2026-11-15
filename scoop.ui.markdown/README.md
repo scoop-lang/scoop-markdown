@@ -6,6 +6,8 @@ Markdown 编辑器的纯 Scoop UI Cone。文档内容和结构操作来自独立
 
 组合控件使用标准 `scoop.ui.component` 的可调分栏，应用在实际 run／mount 入口绑定 `ThemeSource`，与按钮等组件相同。示例使用 `context(ThemeSource(shadcnTheme())) { runUiApplication(...) }`。单独的源码／预览／富文本视图继续使用其显式样式，不要求分栏的主题上下文。
 
+源码、预览和富文本的 View／Host 自动为溢出的轴显示滚动条，支持滑块拖动、轨道翻页和滚轮，使用已有的虚拟视口及 ScrollState；双栏滚动仍可同步。鼠标进入可选择的正文时显示系统 I 型光标，移到滚动条或离开正文后恢复缺省光标；只读模式保留这一选择提示。
+
 开发期间从另一个 Cone 使用 path 依赖：
 
 ```toml

@@ -4,6 +4,43 @@ name = "markdown-editor"
 version = "0.1.0"
 identifier = "org.scoop.examples.markdown-editor"
 display-name = "Scoop Markdown Editor"
+description = "Native Markdown editor with source, rich text and side-by-side views"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/scoop-lang/scoop-markdown"
+homepage = "https://github.com/scoop-lang/scoop-markdown"
+publisher = "Scoop contributors"
+icons = ["packaging/icon.png"]
+
+[[bundle.files]]
+from = "../LICENSE-MIT"
+to = "licenses/LICENSE-MIT"
+kind = "resource"
+
+[[bundle.files]]
+from = "../LICENSE-APACHE"
+to = "licenses/LICENSE-APACHE"
+kind = "resource"
 
 [bundle.macos]
 formats = ["app"]
+
+[bundle.linux]
+formats = ["deb", "rpm", "appimage"]
+categories = ["Utility", "TextEditor"]
+terminal = false
+
+[bundle.linux.deb]
+maintainer = "Scoop contributors"
+section = "editors"
+depends = ["libgtk-4-1 (>= 4.18)", "libadwaita-1-0 (>= 1.4)"]
+
+[bundle.linux.rpm]
+requires = ["gtk4 >= 4.18", "libadwaita >= 1.4"]
+
+[bundle.windows]
+formats = ["nsis", "msi"]
+install-mode = "per-user"
+vc-runtime = "system"
+
+[bundle.windows.msi]
+upgrade-code = "14031142-3588-5bfd-9114-d2ebe67992de"

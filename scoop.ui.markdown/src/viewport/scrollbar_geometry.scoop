@@ -1,0 +1,155 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.math.max
+import scoop.math.min
+import scoop.ui.*
+
+/** The same accepted geometry drives painting, track paging and thumb dragging. */
+internal struct MdScrollbarGeometry(
+    val bounds: Rect,
+    val thumb: Rect,
+    val horizontal: Boolean,
+    val maximum: Double,
+    val page: Double,
+    val start: Double,
+    val travel: Double
+) {
+    val thumbStart: Double get() =
+        if (horizontal)
+            thumb.x
+        else
+            thumb.y
+    val thumbLength: Double get() =
+        if (horizontal)
+            thumb.width
+        else
+            thumb.height
+    fun axis(point: Point): Double =
+        if (horizontal)
+            point.x
+        else
+            point.y
+    fun offset(point: Point, grab: Double): Double =
+        if (travel > 0.0)
+            min(1.0, max(0.0, (axis(point) - start - grab * thumbLength) / travel)) * maximum
+        else
+            0.0
+}
+
+internal fun mdScrollbarGeometry(
+    snapshot: ScrollSnapshot,
+    horizontal: Boolean,
+    direction: LayoutDirection
+): MdScrollbarGeometry? {
+    val width = snapshot.viewport.width
+    val height = snapshot.viewport.height
+    val hasX = snapshot.maximum.x > 0.0
+    val hasY = snapshot.maximum.y > 0.0
+    if (
+        width <=
+            0.0 ||
+            height <=
+            0.0 ||
+            !(
+                if (horizontal)
+                    hasX
+                else
+                    hasY
+            )
+    )
+        return None
+    val thicknessX = min(12.0, width)
+    val thicknessY = min(12.0, height)
+    val rtl = direction == LayoutDirection.Rtl
+    val bounds =
+        if (horizontal)
+            Rect(
+                if (hasY && rtl)
+                    thicknessX
+                else
+                    0.0,
+                height - thicknessY,
+                max(
+                    0.0,
+                    width -
+                        if (hasY)
+                            thicknessX
+                        else
+                            0.0
+                ),
+                thicknessY
+            )
+        else
+            Rect(
+                if (rtl)
+                    0.0
+                else
+                    width - thicknessX,
+                0.0,
+                thicknessX,
+                max(
+                    0.0,
+                    height -
+                        if (hasX)
+                            thicknessY
+                        else
+                            0.0
+                )
+            )
+    val length =
+        (
+            if (horizontal)
+                bounds.width
+            else
+                bounds.height
+        ) -
+            4.0
+    val cross =
+        (
+            if (horizontal)
+                bounds.height
+            else
+                bounds.width
+        ) -
+            4.0
+    if (length <= 0.0 || cross <= 0.0)
+        return None
+    val page =
+        if (horizontal)
+            width
+        else
+            height
+    val content =
+        if (horizontal)
+            snapshot.content.width
+        else
+            snapshot.content.height
+    val maximum =
+        if (horizontal)
+            snapshot.maximum.x
+        else
+            snapshot.maximum.y
+    val offset =
+        if (horizontal)
+            snapshot.offset.x
+        else
+            snapshot.offset.y
+    val thumbLength = min(length, max(24.0, length * page / content))
+    val travel = length - thumbLength
+    val start =
+        (
+            if (horizontal)
+                bounds.x
+            else
+                bounds.y
+        ) +
+            2.0
+    val position = start + travel * min(1.0, max(0.0, offset / maximum))
+    val thumb =
+        if (horizontal)
+            Rect(position, bounds.y + 2.0, thumbLength, cross)
+        else
+            Rect(bounds.x + 2.0, position, cross, thumbLength)
+    return Some(MdScrollbarGeometry(bounds, thumb, horizontal, maximum, page, start, travel))
+}

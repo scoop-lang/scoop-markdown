@@ -1,0 +1,53 @@
+package scoop.examples.markdown.editor
+
+import scoop.platform.fs.Path
+import scoop.text.startsWith
+
+internal struct EditorLaunchOptions(
+    val file: Path?,
+    val mermaid: Path?,
+    val mathjax: (Path, Path, Path)?,
+    val help: Boolean
+)
+
+internal fun editorLaunchOptions(args: Array<String>): EditorLaunchOptions {
+    var file: Path? = None
+    var mermaid: Path? = None
+    var mathjax: (Path, Path, Path)? = None
+    var help = false
+    var positional = false
+    var index = 1L
+    while (index < args.size) {
+        val argument = args[index]
+        if (!positional && argument == "--") {
+            positional = true
+        } else
+            if (!positional && (argument == "--help" || argument == "-h")) {
+                help = true
+            } else
+                if (!positional && argument == "--mermaid" && index + 1L < args.size) {
+                    mermaid = Some(Path.fromString(args[index + 1L]))
+                    index += 1L
+                } else
+                    if (!positional && argument == "--mathjax" && index + 3L < args.size) {
+                        mathjax =
+                            Some(
+                                (
+                                    Path.fromString(args[index + 1L]),
+                                    Path.fromString(args[index + 2L]),
+                                    Path.fromString(args[index + 3L])
+                                )
+                            )
+                        index += 3L
+                    } else
+                        if (file == None && (positional || !argument.startsWith("-"))) {
+                            file = Some(editorAbsolutePath(Path.fromString(argument)))
+                        } else {
+                            throw IllegalArgumentException(
+                                Some("Invalid editor argument: " + argument)
+                            )
+                        }
+        index += 1L
+    }
+    return EditorLaunchOptions(file, mermaid, mathjax, help)
+}
