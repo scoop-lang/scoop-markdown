@@ -1,0 +1,90 @@
+package scoop.ui.markdown
+
+import scoop.markdown.*
+import scoop.ui.*
+
+/** Component controls borrow the source island owned by the rich host. */
+internal class MdRichSourceSession: Closeable {
+    val current = state<MarkdownSourceRegion?>(None)
+    val richFocus = FocusHandle()
+    var returnFocus = richFocus
+    val code = MdCodeSourceState()
+    private var mounted: MarkdownRichHost? = None
+    private var closed = false
+    private var pending = false
+
+    fun bind(editor: MarkdownEditorState, model: MarkdownParsedDocument?) {
+        when (current.value) {
+            case Some(val value) -> if (value.editor === editor && value.range != None)
+                code.synchronize(model, value)
+            case None -> Unit
+        }
+    }
+
+    fun attach(host: MarkdownRichHost) {
+        if (closed)
+            return
+        val changed =
+            when (mounted) {
+                case Some(val old) -> old !== host
+                case None -> true
+            }
+        if (changed) {
+            mounted = Some(host)
+            host.sourceEditingChanged =
+                {
+                    region -> if (!closed) {
+                        current.value = region
+                        code.reset()
+                        bind(host.state, host.preview.controller.current)
+                    }
+                }
+            current.value = host.sourceRegion
+        }
+        if (pending && returnFocus.isAttached && returnFocus.requestFocus())
+            pending = false
+    }
+
+    fun detach(host: MarkdownRichHost) {
+        when (mounted) {
+            case Some(val value) -> if (value === host) {
+                host.sourceEditingChanged = { _ -> Unit }
+                mounted = None
+                current.value = None
+                code.reset()
+            }
+            case None -> Unit
+        }
+    }
+
+    fun focusSource() {
+        pending = true
+        when (mounted) {
+            case Some(val host) -> if (!host.isClosed) {
+                host.reveal(host.state.selection.cursor)
+                attach(host)
+            }
+            case None -> Unit
+        }
+    }
+
+    fun finish(focus: Boolean = true) {
+        when (mounted) {
+            case Some(val host) -> if (!host.isClosed)
+                host.finishSource()
+            case None -> Unit
+        }
+        current.value = None
+        code.reset()
+        if (focus)
+            focusSource()
+    }
+
+    public override fun close() {
+        closed = true
+        when (mounted) {
+            case Some(val host) -> detach(host)
+            case None -> Unit
+        }
+    }
+}

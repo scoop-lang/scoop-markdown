@@ -1,0 +1,365 @@
+package scoop.ui.markdown
+
+import scoop.markdown.*
+import scoop.ui.*
+
+internal struct MdEditorValue(
+    val snapshot: MarkdownSnapshot,
+    val selection: MarkdownSelection,
+    val canUndo: Boolean,
+    val canRedo: Boolean,
+    val savedRevision: Long,
+    val markedRange: MarkdownRange? = None,
+    val inputRevision: Long = 0L
+)
+
+internal enum MdReplay {
+    None, Undo, Redo
+}
+
+internal class MdPendingEdit(
+    val kind: MarkdownEditKind,
+    val after: MarkdownSelection?,
+    val replay: MdReplay = MdReplay.None,
+    val input: MdInputPublication? = None
+)
+
+private fun mdEditorInitial(
+    document: MarkdownDocument,
+    selection: MarkdownSelection
+): MdEditorValue {
+    val snapshot = document.snapshot()
+    mdCheckSelection(snapshot, selection)
+    return MdEditorValue(snapshot, selection, false, false, snapshot.revision)
+}
+
+/** Shared document selection and history for Markdown views; the state borrows its document. */
+public class MarkdownEditorState public constructor(
+    public val document: MarkdownDocument,
+    selection: MarkdownSelection = MarkdownSelection(MarkdownPosition(0L), MarkdownPosition(0L))
+): Closeable {
+    internal val storage = state(mdEditorInitial(document, selection))
+    internal val history = MdHistory()
+    private var pending: MdPendingEdit? = None
+    internal var composition: MdEditorComposition? = None
+    private var closed = false
+    private val subscription = document.observe { change -> changed(change) }
+
+    public val snapshot: MarkdownSnapshot get() = value().snapshot
+    public val selection: MarkdownSelection get() = value().selection
+    public val canUndo: Boolean get() {
+        val current = value();
+        return current.canUndo || current.markedRange != None
+    }
+    public val canRedo: Boolean get() {
+        val current = value();
+        return current.canRedo || current.markedRange != None
+    }
+    public val markedRange: MarkdownRange? get() = value().markedRange
+    public val isComposing: Boolean get() = markedRange != None
+    internal val inputRevision: Long get() = value().inputRevision
+    public val savedRevision: Long get() = value().savedRevision
+    public val isDirty: Boolean get() {
+        val current = value();
+        return current.snapshot.revision != current.savedRevision
+    }
+    public val isClosed: Boolean get() {
+        storage.value;
+        return closed
+    }
+
+    private fun value(): MdEditorValue {
+        val value = storage.value
+        if (closed)
+            throw IllegalStateException(Some("Markdown editor state is closed"))
+        return value
+    }
+
+    internal fun checkEdit() {
+        storage.checkMutation()
+        if (closed)
+            throw IllegalStateException(Some("Markdown editor state is closed"))
+        when (pending) {
+            case Some(_) -> throw IllegalStateException(
+                Some("Markdown editor changes cannot reenter")
+            );
+            case None -> Unit
+        }
+    }
+
+    public fun setSelection(selection: MarkdownSelection): Boolean {
+        checkEdit()
+        val previous = storage.value
+        mdCheckSelection(previous.snapshot, selection)
+        history.breakGroup()
+        val accepted = mdEndComposition(this, previous.snapshot, previous.selection)
+        if (previous.selection == selection && !accepted)
+            return false
+        mdPublishEditorValue(this, previous.snapshot, selection, previous.savedRevision)
+        return true
+    }
+
+    public fun breakUndoGroup() {
+        checkEdit();
+        history.breakGroup()
+    }
+
+    public fun replaceSelection(
+        text: String,
+        kind: MarkdownEditKind = MarkdownEditKind.Separate
+    ): MarkdownChange = replace(selection.range, text, kind)
+
+    public fun replace(
+        range: MarkdownRange,
+        text: String,
+        kind: MarkdownEditKind = MarkdownEditKind.Separate
+    ): MarkdownChange {
+        checkEdit()
+        pending = Some(MdPendingEdit(kind, Some(mdCaret(range.start + text.byteLength))))
+        try {
+            val change = document.replace(range, text)
+            if (!change.changed) {
+                val previous = storage.value
+                val after = mdCaret(range.start + text.byteLength)
+                val accepted = mdEndComposition(this, previous.snapshot, previous.selection)
+                if (after != previous.selection || accepted) {
+                    history.breakGroup()
+                    mdPublishEditorValue(this, previous.snapshot, after, previous.savedRevision)
+                }
+            }
+            return change
+        } finally {
+            pending = None
+        }
+    }
+
+    public fun apply(edit: MarkdownEdit): MarkdownChange {
+        checkEdit()
+        pending = Some(MdPendingEdit(MarkdownEditKind.Separate, None))
+        try {
+            return document.apply(edit)
+        } finally {
+            pending = None
+        }
+    }
+
+    public fun transform(
+        parsed: MarkdownSyntax,
+        configure: MarkdownTransformBuilder.() -> Unit
+    ): MarkdownChange {
+        checkEdit()
+        pending = Some(MdPendingEdit(MarkdownEditKind.Separate, None))
+        try {
+            return document.transform(parsed, configure)
+        } finally {
+            pending = None
+        }
+    }
+
+    /** Publishes a headless semantic edit with its resulting source selection in the same history entry. */
+    public fun apply(
+        edit: MarkdownInlineEdit,
+        reversed: Boolean = false,
+        kind: MarkdownEditKind = MarkdownEditKind.Separate
+    ): MarkdownChange {
+        return applySemantic(edit.selection, reversed, kind) { edit.applyTo(document) }
+    }
+
+    /** Publishes a prepared block operation and its caret as one independent history entry. */
+    public fun apply(edit: MarkdownBlockEdit): MarkdownChange {
+        return applySemantic(edit.selection, false, MarkdownEditKind.Separate) {
+            edit.applyTo(document)
+        }
+    }
+
+    /** A source command can locate its caret in the prepared snapshot before publishing once. */
+    public fun apply(
+        change: MarkdownChange,
+        selection: MarkdownRange,
+        reversed: Boolean = false
+    ): MarkdownChange {
+        if (selection.start > selection.end)
+            throw IllegalArgumentException(Some("Prepared Markdown selection is reversed"))
+        change.after.read(MarkdownRange(selection.start, selection.start))
+        change.after.read(MarkdownRange(selection.end, selection.end))
+        return applySemantic(selection, reversed, MarkdownEditKind.Separate) {
+            change.applyTo(document)
+        }
+    }
+
+    private fun applySemantic(
+        range: MarkdownRange,
+        reversed: Boolean,
+        kind: MarkdownEditKind,
+        publish: () -> MarkdownChange
+    ): MarkdownChange {
+        checkEdit()
+        val after =
+            MarkdownSelection(
+                MarkdownPosition(
+                    if (reversed)
+                        range.end
+                    else
+                        range.start
+                ),
+                MarkdownPosition(
+                    if (reversed)
+                        range.start
+                    else
+                        range.end
+                )
+            )
+        pending = Some(MdPendingEdit(kind, Some(after)))
+        try {
+            val change = publish()
+            if (!change.changed) {
+                val previous = storage.value
+                val accepted = mdEndComposition(this, previous.snapshot, previous.selection)
+                if (after != previous.selection || accepted) {
+                    history.breakGroup()
+                    mdPublishEditorValue(this, previous.snapshot, after, previous.savedRevision)
+                }
+            }
+            return change
+        } finally {
+            pending = None
+        }
+    }
+
+    public fun undo(): Boolean {
+        checkEdit()
+        if (isComposing)
+            return cancelComposition()
+        if (!history.canUndo)
+            return false
+        val entry = history.undoEntry()
+        pending = Some(MdPendingEdit(MarkdownEditKind.Separate, Some(entry.before), MdReplay.Undo))
+        try {
+            document.apply(MarkdownEdit(document.revision, entry.replacements(true)));
+            return true
+        }
+        finally {
+            pending = None
+        }
+    }
+
+    public fun redo(): Boolean {
+        checkEdit()
+        if (isComposing)
+            return cancelComposition()
+        if (!history.canRedo)
+            return false
+        val entry = history.redoEntry()
+        pending = Some(MdPendingEdit(MarkdownEditKind.Separate, Some(entry.after), MdReplay.Redo))
+        try {
+            document.apply(MarkdownEdit(document.revision, entry.replacements(false)));
+            return true
+        }
+        finally {
+            pending = None
+        }
+    }
+
+    public fun markSaved(revision: Long) {
+        checkEdit()
+        val previous = storage.value
+        if (revision < 0L || revision > previous.snapshot.revision)
+            throw IllegalArgumentException(
+                Some("Saved Markdown revision is outside the document history")
+            )
+        storage.value =
+            MdEditorValue(
+                previous.snapshot,
+                previous.selection,
+                history.canUndo,
+                history.canRedo,
+                revision,
+                previous.markedRange,
+                previous.inputRevision
+            )
+    }
+
+    public fun acceptComposition(): Boolean {
+        checkEdit()
+        val previous = storage.value
+        if (!mdEndComposition(this, previous.snapshot, previous.selection))
+            return false
+        mdPublishEditorValue(this, previous.snapshot, previous.selection, previous.savedRevision)
+        return true
+    }
+
+    public fun cancelComposition(): Boolean {
+        checkEdit()
+        val active = composition ?: return false
+        return active.owner.cancel()
+    }
+
+    internal fun publishInput(prepared: MdInputPublication): Boolean {
+        checkEdit()
+        pending =
+            Some(MdPendingEdit(prepared.kind, Some(prepared.selection), input = Some(prepared)))
+        try {
+            val change = prepared.change.applyTo(document)
+            if (!change.changed)
+                mdPublishEditorInput(this, change.after, prepared)
+            return true
+        } finally {
+            pending = None
+        }
+    }
+
+    private fun changed(change: MarkdownChange) {
+        storage.checkMutation()
+        val previous = storage.value
+        when (pending?.input ?: None) {
+            case Some(val prepared) -> {
+                mdPublishEditorInput(this, change.after, prepared);
+                return
+            }
+            case None -> Unit
+        }
+        val selection =
+            if (change.kind == MarkdownChangeKind.Reset) {
+                history.clear()
+                composition = None
+                MarkdownSelection(
+                    mdResetPosition(change.after, previous.selection.anchor),
+                    mdResetPosition(change.after, previous.selection.cursor),
+                    previous.selection.anchorBias,
+                    previous.selection.cursorBias
+                )
+            } else {
+                mdEndComposition(this, change.before, previous.selection)
+                val intent = pending ?: MdPendingEdit(MarkdownEditKind.Separate, None)
+                val after = intent.after ?: previous.selection.map(change)
+                when (intent.replay) {
+                    case MdReplay.None -> history.append(
+                        change,
+                        previous.selection,
+                        after,
+                        intent.kind
+                    )
+                    case MdReplay.Undo -> history.didUndo()
+                    case MdReplay.Redo -> history.didRedo()
+                }
+                after
+            }
+        mdPublishEditorValue(this, change.after, selection, previous.savedRevision)
+    }
+
+    public override fun close() {
+        storage.checkMutation()
+        if (closed)
+            return
+        when (pending) {
+            case Some(_) -> throw IllegalStateException(
+                Some("Markdown editor cannot close during its edit")
+            );
+            case None -> Unit
+        }
+        acceptComposition()
+        subscription.close()
+        history.clear()
+        closed = true
+    }
+}

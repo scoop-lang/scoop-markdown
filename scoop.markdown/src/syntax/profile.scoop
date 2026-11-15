@@ -1,0 +1,134 @@
+package scoop.markdown
+
+/** A fixed parse configuration; extension implementations must remain unchanged while in use. */
+public class MarkdownProfile public constructor(
+    public val tables: Boolean = true,
+    public val taskLists: Boolean = true,
+    public val strikethrough: Boolean = true,
+    public val autolinks: Boolean = true,
+    public val math: Boolean = false,
+    public val frontMatter: Boolean = false,
+    public val footnotes: Boolean = false,
+    extensions: List<MarkdownExtension> = [],
+    nodeExtensions: List<MarkdownNodeExtension> = [],
+    blockExtensions: List<MarkdownBlockExtension> = []
+): Equals<MarkdownProfile> {
+    internal val registered =
+        Array<MdRegisteredExtension>(extensions.size) {
+            index -> MdRegisteredExtension(extensions[index])
+        }
+    public val extensions: Array<MarkdownExtension> get() =
+        Array<MarkdownExtension>(registered.size) { index -> registered[index].handler }
+    internal val registeredNodes =
+        Array<MdRegisteredNodeExtension>(nodeExtensions.size) {
+            index -> MdRegisteredNodeExtension(nodeExtensions[index])
+        }
+    public val nodeExtensions: Array<MarkdownNodeExtension> get() =
+        Array<MarkdownNodeExtension>(registeredNodes.size) {
+            index -> registeredNodes[index].handler
+        }
+    internal val registeredBlocks =
+        Array<MdRegisteredBlockExtension>(blockExtensions.size) {
+            index -> MdRegisteredBlockExtension(blockExtensions[index])
+        }
+    public val blockExtensions: Array<MarkdownBlockExtension> get() =
+        Array<MarkdownBlockExtension>(registeredBlocks.size) {
+            index -> registeredBlocks[index].handler
+        }
+
+    init {
+        for (entry in registeredNodes)
+            requireMarkdown(entry.name != "", "Markdown node extension name is empty")
+        for (entry in registeredBlocks) {
+            requireMarkdown(entry.name != "", "Markdown block extension name is empty")
+            requireMarkdown(entry.trigger.size > 0L, "Markdown block extension trigger is empty")
+            for (byte in entry.trigger)
+                requireMarkdown(
+                    byte != 10.toByte() && byte != 13.toByte(),
+                    "Markdown block extension trigger must stay on one line"
+                )
+            requireMarkdown(!math || entry.name != "math", "The math extension name is reserved")
+            requireMarkdown(
+                !frontMatter || entry.name != "front-matter",
+                "The front-matter extension name is reserved"
+            )
+        }
+        for (index in 0L ..< registered.size) {
+            val entry = registered[index]
+            requireMarkdown(entry.name != "", "Markdown extension name is empty")
+            requireMarkdown(entry.trigger.size > 0L, "Markdown extension trigger is empty")
+            requireMarkdown(!math || entry.name != "math", "The math extension name is reserved")
+            requireMarkdown(
+                !frontMatter || entry.name != "front-matter",
+                "The front-matter extension name is reserved"
+            )
+            for (before in 0L ..< index)
+                requireMarkdown(
+                    registered[before].name != entry.name,
+                    "Duplicate Markdown extension name"
+                )
+        }
+    }
+
+    internal fun startsExtension(code: Int): Boolean {
+        for (entry in registered)
+            if (entry.locations.inlineContent && entry.trigger[0L].toInt().and(255) == code)
+                return true
+        return false
+    }
+
+    public override operator fun equals(other: MarkdownProfile): Boolean {
+        if (
+            tables !=
+                other.tables ||
+                taskLists !=
+                other.taskLists ||
+                strikethrough !=
+                other.strikethrough ||
+                autolinks !=
+                other.autolinks ||
+                math !=
+                other.math ||
+                frontMatter !=
+                other.frontMatter ||
+                footnotes !=
+                other.footnotes ||
+                registered.size !=
+                other.registered.size ||
+                registeredNodes.size !=
+                other.registeredNodes.size ||
+                registeredBlocks.size !=
+                other.registeredBlocks.size
+        )
+            return false
+        for (index in 0L ..< registered.size)
+            if (registered[index].handler !== other.registered[index].handler)
+                return false
+        for (index in 0L ..< registeredNodes.size)
+            if (registeredNodes[index].handler !== other.registeredNodes[index].handler)
+                return false
+        for (index in 0L ..< registeredBlocks.size)
+            if (registeredBlocks[index].handler !== other.registeredBlocks[index].handler)
+                return false
+        return true
+    }
+
+    public companion object {
+        public val CommonMark: MarkdownProfile = MarkdownProfile(false, false, false, false)
+        public val Gfm: MarkdownProfile = MarkdownProfile()
+        public val Editor: MarkdownProfile =
+            MarkdownProfile(
+                math = true,
+                frontMatter = true,
+                footnotes = true,
+                extensions = [tableOfContentsDirective()],
+                nodeExtensions = [markdownCodeExtension("mermaid")]
+            )
+    }
+}
+
+internal class MdRegisteredExtension(val handler: MarkdownExtension) {
+    val name = handler.name
+    val trigger = handler.trigger.toByteArray()
+    val locations = handler.locations
+}

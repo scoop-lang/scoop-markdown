@@ -1,0 +1,76 @@
+package scoop.ui.markdown
+
+import scoop.graphics.text.FontCollection
+import scoop.markdown.*
+import scoop.ui.*
+import scoop.ui.component.*
+
+private class MdFormattingProps(val editor: MarkdownEditorViewState, val fonts: FontCollection?)
+
+/** Optional formatting controls using the application's ordinary UI component theme. */
+public fun markdownFormattingToolbar(
+    state: MarkdownEditorViewState,
+    fonts: FontCollection? = None
+): View = component(MdFormattingProps(state, fonts), { props, scope -> MdFormatting(props, scope) })
+
+private class MdFormatting(val props: Props<MdFormattingProps>, scope: ComponentScope): Component(
+    scope
+) {
+    private val target = MdTargetDialog()
+
+    public override fun render(): View {
+        val input = props.value
+        return row {
+            spacing = 4.0
+            for (
+                format in [
+                    MarkdownInlineStyle.Strong,
+                    MarkdownInlineStyle.Emphasis,
+                    MarkdownInlineStyle.Strikethrough
+                ]
+            ) {
+                val status = input.editor.styleState(format)
+                val label =
+                    when (format) {
+                        case Strong -> "Bold"
+                        case Emphasis -> "Italic"
+                        case Strikethrough -> "Strikethrough"
+                    }
+                button(label, { input.editor.toggleStyle(format) }) {
+                    enabled = status != MarkdownStyleState.Unavailable
+                    fonts = input.fonts
+                    size = ButtonSize.Sm
+                    variant = mdFormatVariant(status)
+                }
+            }
+            val code = input.editor.codeState()
+            button("Code", { input.editor.toggleCode() }) {
+                enabled = code != MarkdownStyleState.Unavailable
+                fonts = input.fonts
+                size = ButtonSize.Sm
+                variant = mdFormatVariant(code)
+            }
+            for (kind in [MarkdownTargetKind.Link, MarkdownTargetKind.Image])
+                button(
+                    if (kind == MarkdownTargetKind.Link)
+                        "Link"
+                    else
+                        "Image",
+                    { this @MdFormatting.target.open(input.editor, kind) }
+                ) {
+                    enabled = input.editor.canEditTarget
+                    fonts = input.fonts
+                    size = ButtonSize.Sm
+                    variant = ButtonVariant.Ghost
+                }
+            item(this @MdFormatting.target.view(input.editor, input.fonts))
+        }
+    }
+}
+
+private fun mdFormatVariant(status: MarkdownStyleState): ButtonVariant =
+    when (status) {
+        case On -> ButtonVariant.Secondary
+        case Mixed -> ButtonVariant.Outline
+        else -> ButtonVariant.Ghost
+    }

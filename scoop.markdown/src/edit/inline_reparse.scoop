@@ -1,0 +1,43 @@
+package scoop.markdown
+
+import scoop.collections.HashMap
+
+/** Rebuilds only the editable block's inline mapping; references retain their original targets. */
+internal fun mdInlineReparse(content: MarkdownInlineContent, source: MarkdownText): MarkdownNode {
+    return mdInlineReparse(content.profile, content.model.units, source)
+}
+
+internal fun mdInlineReparse(
+    profile: MarkdownProfile,
+    context: Array<MdInlineUnit>,
+    source: MarkdownText
+): MarkdownNode {
+    val references = HashMap<String, MarkdownLinkTarget>()
+    val footnotes = HashMap<String, MdBuildNode>()
+    for (unit in context) {
+        when (unit.link) {
+            case Some(val link) -> if (link.target.label != "")
+                references[link.target.label] = link.target
+            case None -> Unit
+        }
+        when (unit.node?.content) {
+            case Some(MarkdownContent.FootnoteReference(val label)) ->
+            footnotes[label] = MdBuildNode(MdKind.FootnoteDefinition, 0L, 0L)
+            else -> Unit
+        }
+    }
+    val range = mdInlineRange(source)
+    val root = MdBuildNode(MdKind.Paragraph, range.start, range.end)
+    root.ready = Some(source)
+    val syntax = MdSyntax()
+    try {
+        MdInlineParser(root, MdInput(source), syntax, profile, references, footnotes).parse()
+        mdMergeText(root)
+        if (profile.autolinks)
+            mdGfmAutolinks(root, syntax)
+        mdFreezeNodes(root)
+        return root.frozen!!
+    } finally {
+        syntax.close()
+    }
+}

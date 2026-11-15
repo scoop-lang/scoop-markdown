@@ -1,0 +1,21 @@
+schema = 1
+
+[workspace]
+members = [
+    "scoop.markdown",
+    "scoop.ui.markdown",
+    "markdown-editor",
+    "scoop.markdown/examples/source",
+    "scoop.ui.markdown/examples/preview",
+    "scoop.ui.markdown/examples/source-editor",
+    "scoop.ui.markdown/tests-cones/editor",
+    "scoop.ui.markdown/tests-cones/images",
+    "scoop.ui.markdown/tests-cones/preview",
+    "scoop.ui.markdown/tests-cones/rich",
+    "scoop.ui.markdown/tests-cones/source",
+    "test-support/graphics-native",
+    "test-support/surface-native",
+    "test-support/text-fonts",
+    "test-support/window-native",
+]
+default-members = ["scoop.markdown", "scoop.ui.markdown", "markdown-editor"]

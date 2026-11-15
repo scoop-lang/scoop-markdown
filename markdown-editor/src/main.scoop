@@ -1,0 +1,111 @@
+package scoop.examples.markdown.editor
+
+import scoop.concurrent.multiThreadExecutor
+import scoop.markdown.*
+import scoop.platform.fs.*
+import scoop.platform.env.currentDirectory
+import scoop.platform.process.*
+import scoop.ui.*
+import scoop.ui.style.ThemeSource
+import scoop.ui.markdown.*
+import scoop.window.*
+import scoop.url.*
+
+fun main(args: Array<String>) {
+    if (args.size < 2L) {
+        println(
+            "Usage: markdown-editor <markdown-file> [--mermaid <mmdc>] [--mathjax <node> <@mathjax/src> <rsvg-convert>]"
+        )
+        return
+    }
+    val file = currentDirectory().resolve(Path.fromString(args[1L])).normalizeLexically()
+    val documentUri =
+        url {
+            scheme = Some("file");
+            host("");
+            path(file.toOsString().decodeUtf8())
+        }.toString()
+    val editor = MarkdownEditorState(MarkdownDocument.fromText(file.readText()))
+    val renderers = ArrayList<MarkdownImageRenderer>()
+    renderers.add(MarkdownFileImageRenderer())
+    val workers =
+        multiThreadExecutor {
+            workers = 1;
+            blocking { threads = 1 }
+        }
+    try {
+        var index = 2L
+        while (index < args.size) {
+            if (args[index] == "--mermaid" && index + 1L < args.size) {
+                renderers.add(
+                    MarkdownMermaidImageRenderer(
+                        command(Path.fromString(args[index + 1L])),
+                        "configured-mmdc"
+                    )
+                )
+                index += 2L
+            } else
+                if (args[index] == "--mathjax" && index + 3L < args.size) {
+                    renderers.add(
+                        MarkdownMathJaxImageRenderer(
+                            command(Path.fromString(args[index + 1L])),
+                            Path.fromString(args[index + 2L]),
+                            command(Path.fromString(args[index + 3L])),
+                            "configured-mathjax-rsvg"
+                        )
+                    )
+                    index += 4L
+                } else
+                    throw IllegalArgumentException(Some("Invalid editor arguments"))
+        }
+        context(ThemeSource(editorTheme())) {
+            val application =
+                Application(applicationOptions { lastWindowPolicy = LastWindowPolicy.Exit })
+            UiHost(
+                onRootError =
+                    {
+                        _, error ->
+                        when (error as? Exception) {
+                            case Some(val failure) -> println(
+                                failure.message ?: "Markdown UI failed"
+                            )
+                            case None -> Unit
+                        }
+                        throw error
+                    }
+            ) {
+                host,
+                active,
+                event -> when (event) {
+                    case Resumed -> host.attach(
+                        active.createWindow(
+                            windowAttributes {
+                                title =
+                                    editorFileName(file.toOsString().decodeUtf8()) +
+                                        " — Scoop Markdown"
+                                size = LogicalSize(1180.0, 780.0)
+                                constraints =
+                                    WindowSizeConstraints(min = Some(LogicalSize(860.0, 500.0)))
+                            }
+                        ),
+                        {
+                            scope -> EditorWindow(
+                                editor,
+                                file,
+                                documentUri,
+                                workers,
+                                renderers,
+                                scope
+                            )
+                        }
+                    )
+                    case Window(_, WindowEvent.CloseRequested) -> active.requestExit()
+                    else -> Unit
+                }
+            }.use { host -> application.run(host) }
+        }
+    } finally {
+        workers.close();
+        editor.close()
+    }
+}

@@ -1,0 +1,501 @@
+package scoop.ui.markdown
+
+import scoop.collections.HashMap
+import scoop.markdown.*
+
+private class MdPendingMarker(val parent: MdPendingMarker?, val value: MdDisplayMarker) {
+    var used = false
+}
+
+private class MdDisplayContext(
+    val indent: Long = 0L,
+    val quotes: MdDisplayQuote? = None,
+    val marker: MdPendingMarker? = None
+)
+
+private class MdBlockFrame(val node: MarkdownNode, val context: MdDisplayContext)
+
+internal class MdProjectionFootnote(val label: String, val number: Long, val node: MarkdownNode)
+
+internal fun mdProjectMarkdown(
+    parsed: ParsedMarkdown,
+    previous: MdDisplayDocument? = None,
+    presenters: MdExtensionPresenters = MdExtensionPresenters(),
+    highlights: MarkdownCodeHighlights? = None,
+    navigation: MarkdownNavigation? = None,
+    extensions: MarkdownExtensionIndex = parsed.extensionIndex()
+): MdDisplayDocument {
+    val notes =
+        Array<MdProjectionFootnote>(parsed.footnotes.size) {
+            index ->
+            val entry = parsed.footnotes[index]
+            MdProjectionFootnote(entry.label, entry.number, parsed.node(entry.definition))
+        }
+    return MdBlockProjection(
+        parsed,
+        presenters,
+        notes,
+        HashMap(),
+        highlights,
+        Some(navigation ?: parsed.navigation()),
+        extensions
+    ).build(previous)
+}
+
+internal fun mdProjectRegion(
+    parsed: ParsedMarkdownRegion,
+    notes: HashMap<String, (Long, MarkdownRange)>,
+    options: MarkdownParseOptions
+): MdDisplayDocument {
+    val definitions = ArrayList<MdProjectionFootnote>()
+    for (node in parsed.nodes())
+        when (node.content) {
+            case MarkdownContent.FootnoteDefinition(val label) -> {
+                when (notes[label]) {
+                    case Some(val entry) -> definitions.add(
+                        MdProjectionFootnote(label, entry._1, node)
+                    )
+                    case None -> Unit
+                }
+            }
+            else -> Unit
+        }
+    return MdBlockProjection(
+        parsed,
+        options.extensionPresenters,
+        definitions.toArray(),
+        notes,
+        extensions = parsed.extensionIndex()
+    ).build(None)
+}
+
+private class MdBlockProjection(
+    val parsed: MarkdownSyntax,
+    val presenters: MdExtensionPresenters,
+    val notes: Array<MdProjectionFootnote>,
+    val footnotes: HashMap<String, (Long, MarkdownRange)>,
+    val highlights: MarkdownCodeHighlights? = None,
+    val navigation: MarkdownNavigation? = None,
+    val extensions: MarkdownExtensionIndex
+) {
+    val rows = ArrayList<MdDisplayRow>()
+    val pending = ArrayList<MdBlockFrame>()
+
+    fun build(previous: MdDisplayDocument?): MdDisplayDocument {
+        for (entry in notes)
+            footnotes[entry.label] = (entry.number, entry.node.range)
+        pending.add(MdBlockFrame(parsed.root, MdDisplayContext()))
+        drain()
+        for (entry in notes) {
+            val definition = entry.node
+            val marker =
+                MdDisplayMarker(
+                    0L,
+                    "[" + entry.number.toString() + "]",
+                    None,
+                    definition.id,
+                    definition.range
+                )
+            val context = MdDisplayContext(1L, marker = Some(MdPendingMarker(None, marker)))
+            children(definition, context)
+            if (definition.children.size == 0L)
+                add(
+                    definition,
+                    definition.range,
+                    MdDisplayKind.Paragraph,
+                    context,
+                    [MdDisplayTextBuilder(definition.range).finish()]
+                )
+            drain()
+        }
+        if (rows.size == 0L)
+            add(
+                parsed.root,
+                parsed.root.range,
+                MdDisplayKind.Paragraph,
+                MdDisplayContext(),
+                [MdDisplayTextBuilder(parsed.root.range).finish()]
+            )
+        return mdDisplayReconcile(parsed, rows.toArray(), previous)
+    }
+
+    private fun children(node: MarkdownNode, context: MdDisplayContext) {
+        var index = node.children.size
+        while (index > 0L) {
+            index -= 1L
+            pending.add(MdBlockFrame(node.children[index], context))
+        }
+    }
+
+    private fun add(
+        node: MarkdownNode,
+        range: MarkdownRange,
+        kind: MdDisplayKind,
+        context: MdDisplayContext,
+        cells: Array<MdDisplayText>,
+        generated: Boolean = false
+    ) {
+        val markers = ArrayList<MdDisplayMarker>()
+        var marker = context.marker
+        while (true) {
+            val current = marker ?: break
+            if (!current.used) {
+                current.used = true
+                markers.add(current.value)
+            }
+            marker = current.parent
+        }
+        rows.add(
+            MdDisplayRow(
+                node.id,
+                range,
+                kind,
+                context.indent,
+                context.quotes,
+                markers.toArray(),
+                cells,
+                MdDisplayKey(rows.size),
+                if (generated)
+                    Some(node.range)
+                else
+                    when (kind) {
+                        case MdDisplayKind.Code(_, _, _) -> Some(node.range)
+                        case MdDisplayKind.Source(_, _, _) -> Some(node.range)
+                        else -> None
+                    },
+                generated
+            )
+        )
+    }
+
+    private fun drain() {
+        while (pending.size > 0L) {
+            val entry = pending.removeAt(pending.size - 1L)
+            val node = entry.node
+            val context = entry.context
+            when (extensions.forNode(node.id)) {
+                case Some(val span) -> if (
+                    span.form == MarkdownExtensionForm.Block && present(span, context)
+                )
+                    continue
+                case None -> Unit
+            }
+            when (node.content) {
+                case MarkdownContent.Paragraph(_) -> {
+                    val standalone = standaloneImage(node)
+                    when (standalone) {
+                        case Some(val span) -> {
+                            if (!present(span, context))
+                                image(
+                                    span.node,
+                                    context,
+                                    mdExtensionImageObject(span, mdExtensionImage(span)!!)
+                                )
+                        }
+                        case None -> add(
+                            node,
+                            node.range,
+                            MdDisplayKind.Paragraph,
+                            context,
+                            [mdDisplayInlines(node, footnotes, extensions, presenters)]
+                        )
+                    }
+                }
+                case MarkdownContent.Heading(val level, _, _) ->
+                add(
+                    node,
+                    node.range,
+                    MdDisplayKind.Heading(level),
+                    context,
+                    [mdDisplayInlines(node, footnotes, extensions, presenters)]
+                )
+                case MarkdownContent.BlockQuote ->
+                children(
+                    node,
+                    MdDisplayContext(
+                        context.indent + 1L,
+                        Some(MdDisplayQuote(context.quotes, context.indent)),
+                        context.marker
+                    )
+                )
+                case MarkdownContent.ListBlock(val info) -> {
+                    var index = node.children.size
+                    while (index > 0L) {
+                        index -= 1L
+                        val child = node.children[index]
+                        val task =
+                            when (child.content) {
+                                case MarkdownContent.ListItem(val value) -> value
+                                else -> None
+                            }
+                        val label =
+                            if (info.ordered)
+                                (info.start + index).toString() + "."
+                            else
+                                "•"
+                        val marker =
+                            MdDisplayMarker(context.indent, label, task, child.id, child.range)
+                        pending.add(
+                            MdBlockFrame(
+                                child,
+                                MdDisplayContext(
+                                    context.indent + 1L,
+                                    context.quotes,
+                                    Some(MdPendingMarker(context.marker, marker))
+                                )
+                            )
+                        )
+                    }
+                }
+                case MarkdownContent.ListItem(_) -> {
+                    if (node.children.size == 0L)
+                        add(
+                            node,
+                            node.range,
+                            MdDisplayKind.Paragraph,
+                            context,
+                            [MdDisplayTextBuilder(node.range).finish()]
+                        )
+                    else
+                        children(node, context)
+                }
+                case MarkdownContent.ThematicBreak ->
+                add(node, node.range, MdDisplayKind.Rule, context, [])
+                case MarkdownContent.CodeBlock(_, val info, val body) -> {
+                    lines(node, body, context, info.text, false, highlights?.tokens(node) ?: [])
+                }
+                case MarkdownContent.HtmlBlock(val source) ->
+                lines(node, source, context, "HTML", true)
+                case MarkdownContent.Extension(val value) -> {
+                    if (value.name == "toc") {
+                        when (navigation) {
+                            case Some(val index) -> {
+                                toc(node, context, index);
+                                continue
+                            }
+                            case None -> Unit
+                        }
+                    }
+                    if (node.children.size > 0L)
+                        children(node, context)
+                    else
+                        lines(node, value.source, context, value.name, true)
+                }
+                case MarkdownContent.Table(val alignments) ->
+                table(node, alignments, context)
+                case MarkdownContent.FootnoteDefinition(_) -> Unit
+                case MarkdownContent.ReferenceDefinition(_, _) -> Unit
+                else -> children(node, context)
+            }
+        }
+    }
+
+    /** Returns false only when the node should continue through its native projection. */
+    private fun present(span: MarkdownExtensionSpan, context: MdDisplayContext): Boolean {
+        when (presenters.block(span)) {
+            case MarkdownBlockPresentation.Native -> return false
+            case MarkdownBlockPresentation.Image(val value) ->
+            image(span.node, context, mdExtensionImageObject(span, value))
+            case MarkdownBlockPresentation.Source -> {
+                when (span.node.content) {
+                    case MarkdownContent.Extension(val value) ->
+                    lines(span.node, value.source, context, span.name, true)
+                    else -> sourceLines(span.node, context, span.name)
+                }
+            }
+        }
+        return true
+    }
+
+    private fun sourceLines(node: MarkdownNode, context: MdDisplayContext, label: String) {
+        var line = parsed.snapshot.lineAt(MarkdownPosition(node.range.start))
+        var start = node.range.start
+        var first = true
+        while (true) {
+            val physical = parsed.snapshot.lineRange(line)
+            val whole = parsed.snapshot.lineRange(line, true)
+            val end =
+                if (physical.end < node.range.end)
+                    physical.end
+                else
+                    node.range.end
+            val next =
+                if (whole.end < node.range.end)
+                    whole.end
+                else
+                    node.range.end
+            val last = next == node.range.end
+            val range = MarkdownRange(start, next)
+            val builder = MdDisplayTextBuilder(range)
+            val visible =
+                MarkdownRange(
+                    start,
+                    if (end < start)
+                        start
+                    else
+                        end
+                )
+            builder.append(
+                parsed.snapshot.read(visible),
+                visible,
+                true,
+                MdDisplayFlags(code = true)
+            )
+            add(node, range, MdDisplayKind.Source(label, first, last), context, [builder.finish()])
+            if (last)
+                break
+            start = next
+            line += 1L
+            first = false
+        }
+    }
+
+    private fun standaloneImage(node: MarkdownNode): MarkdownExtensionSpan? {
+        for (child in node.children)
+            when (child.content) {
+                case MarkdownContent.Image(_) -> {
+                    val span = extensions.forNode(child.id)!!
+                    if (span.form == MarkdownExtensionForm.Block)
+                        return Some(span)
+                }
+                else -> Unit
+            }
+        return None
+    }
+
+    private fun toc(node: MarkdownNode, context: MdDisplayContext, navigation: MarkdownNavigation) {
+        if (navigation.headings.size == 0L) {
+            val text = MdDisplayTextBuilder(node.range)
+            text.append(
+                "Table of contents",
+                node.range,
+                false,
+                action = Some(MdDisplayAction.Source(node.range))
+            )
+            add(node, node.range, MdDisplayKind.Paragraph, context, [text.finish()], true)
+            return
+        }
+        for (heading in navigation.headings) {
+            var depth = 0L
+            var parent = heading.parent
+            while (parent != None) {
+                depth += 1L
+                parent = navigation.headings[parent!!].parent
+            }
+            val text = MdDisplayTextBuilder(node.range)
+            text.append(
+                if (heading.title == "")
+                    "Untitled"
+                else
+                    heading.title,
+                node.range,
+                false,
+                MdDisplayFlags(link = true),
+                Some(MdDisplayAction.Navigate(heading.range))
+            )
+            add(
+                node,
+                node.range,
+                MdDisplayKind.Paragraph,
+                MdDisplayContext(context.indent + depth, context.quotes, context.marker),
+                [text.finish()],
+                true
+            )
+        }
+    }
+
+    private fun image(node: MarkdownNode, context: MdDisplayContext, value: MdDisplayObject) {
+        val builder = MdDisplayTextBuilder(node.range)
+        builder.append(
+            "\u{fffc}",
+            node.range,
+            false,
+            action = Some(MdDisplayAction.Source(node.range)),
+            objectValue = Some(value)
+        )
+        add(node, node.range, MdDisplayKind.ImageBlock, context, [builder.finish()])
+    }
+
+    private fun lines(
+        node: MarkdownNode,
+        value: MarkdownText,
+        context: MdDisplayContext,
+        label: String,
+        raw: Boolean,
+        tokens: Array<MarkdownCodeSpan> = []
+    ) {
+        val bytes = value.text.toByteArray()
+        var start = 0L
+        var first = true
+        while (true) {
+            var end = start
+            while (end < bytes.size && bytes[end] != 10.toByte() && bytes[end] != 13.toByte())
+                end += 1L
+            var next = end
+            if (next < bytes.size) {
+                next += 1L
+                if (bytes[end] == 13.toByte() && next < bytes.size && bytes[next] == 10.toByte())
+                    next += 1L
+            }
+            val last = next == bytes.size
+            val range =
+                MarkdownRange(
+                    if (first)
+                        node.range.start
+                    else
+                        value.sourceAt(MarkdownPosition(start), MarkdownBias.Before).byteOffset,
+                    if (last)
+                        node.range.end
+                    else
+                        value.sourceAt(MarkdownPosition(next), MarkdownBias.Before).byteOffset
+                )
+            val builder = MdDisplayTextBuilder(range)
+            mdCodeDisplay(builder, value, tokens, start, end)
+            add(
+                node,
+                range,
+                if (raw)
+                    MdDisplayKind.Source(label, first, last)
+                else
+                    MdDisplayKind.Code(label, first, last),
+                context,
+                [builder.finish()]
+            )
+            if (last)
+                break
+            start = next
+            first = false
+        }
+    }
+
+    private fun table(
+        node: MarkdownNode,
+        alignments: Array<MarkdownAlignment>,
+        context: MdDisplayContext
+    ) {
+        for (index in 0L ..< node.children.size) {
+            val row = node.children[index]
+            val header =
+                when (row.content) {
+                    case MarkdownContent.TableRow(val value) -> value
+                    else -> false
+                }
+            val range =
+                MarkdownRange(
+                    row.range.start,
+                    if (index + 1L < node.children.size)
+                        node.children[index + 1L].range.start
+                    else
+                        node.range.end
+                )
+            val cells =
+                Array<MdDisplayText>(alignments.size) {
+                    at -> if (at < row.children.size)
+                        mdDisplayInlines(row.children[at], footnotes, extensions, presenters)
+                    else
+                        MdDisplayTextBuilder(MarkdownRange(row.range.end, row.range.end)).finish()
+                }
+            add(row, range, MdDisplayKind.Table(alignments, header), context, cells)
+        }
+    }
+}

@@ -1,0 +1,187 @@
+package scoop.examples.markdown
+
+import scoop.markdown.*
+import scoop.test.*
+
+@Test
+private class MarkdownEditingExampleTests {
+    @Test
+    fun aHeadlessConsumerFormatsAcrossBlocksAndQueriesTheResult() {
+        val document = MarkdownDocument.fromText("ab\n\ncd\n\nTail\n")
+        val current = document.parse().textContent(MarkdownRange(1L, 5L))
+        val range = MarkdownRange(1L, 4L)
+        assertEquals(MarkdownStyleState.Off, current.styleState(range, MarkdownInlineStyle.Strong))
+        val edit = current.setStyle(range, MarkdownInlineStyle.Strong, true)
+        assertEquals(0L, document.revision)
+        edit.applyTo(document)
+        assertEquals("ab\ncd\nTail", edit.after.text.text)
+        assertEquals(
+            MarkdownStyleState.On,
+            edit.after.styleState(range, MarkdownInlineStyle.Strong)
+        )
+        val restored = edit.after.edit { restore(current) }
+        restored.applyTo(document)
+        assertEquals("ab\n\ncd\n\nTail\n", document.toMarkdown())
+    }
+
+    @Test
+    fun aHeadlessConsumerReplacesAndRestoresTextAcrossBlocks() {
+        val source = "ab\n\ncd\n\nTail\n"
+        val document = MarkdownDocument.fromText(source)
+        val initial = document.parse().textContent(MarkdownRange(1L, 5L))
+        val edit =
+            initial.edit {
+                replaceText(MarkdownRange(1L, 4L), "中文")
+                assertEquals("a中文d\nTail", this.content.text.text)
+                select(MarkdownRange(1L, 7L))
+            }
+        assertEquals(0L, document.revision)
+        edit.applyTo(document)
+        assertSame(edit.after.snapshot, document.snapshot())
+        assertEquals(MarkdownRange(1L, 7L), edit.selection)
+        val restored = edit.after.edit { restore(initial) }
+        restored.applyTo(document)
+        assertEquals(source, document.toMarkdown())
+    }
+
+    @Test
+    fun aHeadlessConsumerLocatesPreparedStructureBeforePublishing() {
+        val document = MarkdownDocument.fromText("| A | B |\n| --- | --- |\n")
+        val syntax = document.parse().region(MarkdownRange(0L, 0L)).parse()
+        val change =
+            syntax.prepareTransform {
+                insertTableRow(syntax.root.children[0L].id, 1L) {
+                    cell {};
+                    cell {}
+                }
+            }
+        val next = syntax.region.after(change).parse()
+        val cell = next.root.children[0L].children[1L].children[0L]
+        val at = next.inlineContent(cell.id).text.sourceAt(MarkdownPosition(0L))
+        assertEquals(0L, document.revision)
+        change.applyTo(document)
+        assertSame(next.snapshot, document.snapshot())
+        assertEquals("", next.inlineContentAt(at)!!.text.text)
+        val inverse =
+            document.snapshot().prepare(MarkdownEdit(document.revision, change.inverseReplacements))
+        inverse.applyTo(document)
+        assertEquals(syntax.snapshot.toMarkdown(), document.toMarkdown())
+    }
+
+    @Test
+    fun `a headless consumer advances local syntax on the original source snapshot`() {
+        val document = MarkdownDocument.fromText("before\n\n# Title\n\nbody\n\nend\n")
+        val complete = document.parse()
+        val region = complete.region(complete.root.children[1L].range)
+        val local = region.parse()
+        val edit = local.splitBlock(local.root.children[1L].id, MarkdownRange(2L, 2L))
+        edit.applyTo(document)
+        val next = region.after(edit.change).parse()
+        assertSame(document.snapshot(), next.snapshot)
+        assertEquals("Title", local.inlineContent(local.root.children[1L].id).text.text)
+        assertEquals(
+            "tle",
+            next.inlineContentAt(MarkdownPosition(edit.selection.start))!!.text.text
+        )
+        document.apply(MarkdownEdit(document.revision, edit.change.inverseReplacements))
+        assertEquals("before\n\n# Title\n\nbody\n\nend\n", document.toMarkdown())
+    }
+
+    @Test
+    fun `headless consumers split and join blocks with a prepared result caret`() {
+        val document = MarkdownDocument.fromText("# Hello Scoop\n")
+        val parsed = document.parse()
+        val split = parsed.splitBlock(parsed.root.children[0L].id, MarkdownRange(5L, 6L))
+        split.applyTo(document)
+        assertEquals("# Hello\n\nScoop\n", document.toMarkdown())
+        assertEquals(MarkdownRange(9L, 9L), split.selection)
+        val current = document.parse()
+        val join = current.joinBlocks(current.root.children[0L].id, current.root.children[1L].id)
+        join.applyTo(document)
+        assertEquals("# HelloScoop\n", document.toMarkdown())
+        document.apply(MarkdownEdit(document.revision, join.change.inverseReplacements))
+        document.apply(MarkdownEdit(document.revision, split.change.inverseReplacements))
+        assertEquals("# Hello Scoop\n", document.toMarkdown())
+    }
+
+    @Test
+    fun `headless consumers can nest list items and explicitly number the outer list`() {
+        val original = "- First\n- [x] Child\n- Last\n"
+        val document = MarkdownDocument.fromText(original)
+        val parsed = document.parse()
+        val change =
+            document.transform(parsed) { indentListItem(parsed.root.children[0L].children[1L].id) }
+        assertEquals("- First\n  - [x] Child\n- Last\n", document.toMarkdown())
+        val nested = document.parse()
+        val numbered =
+            document.transform(nested) { setOrderedList(nested.root.children[0L].id, 9L) }
+        assertEquals("9. First\n   - [x] Child\n10. Last\n", document.toMarkdown())
+        document.apply(MarkdownEdit(document.revision, numbered.inverseReplacements))
+        document.apply(MarkdownEdit(document.revision, change.inverseReplacements))
+        assertEquals(original, document.toMarkdown())
+    }
+
+    @Test
+    fun `headless consumers can add formatted table columns and paste rectangular TSV`() {
+        val document = MarkdownDocument.fromText("| Name | Score |\n|---|---|\n| A | 100 |\n")
+        val parsed = document.parse()
+        document.transform(parsed) {
+            insertTableColumn(parsed.root.children[0L].id, 1L, MarkdownAlignment.Left) {
+                strong { text("Notes") }
+            }
+        }
+        val current = document.parse()
+        val change =
+            document.transform(current) {
+                pasteTableTsv(current.root.children[0L].id, 1L, 1L, "\"α|β\"\t12\r\n中文\t34")
+            }
+        val after = document.parse()
+        val table = after.root.children[0L]
+        assertEquals(3L, table.children.size)
+        assertEquals(3L, table.children[0L].children.size)
+        assertEquals("α|β", after.inlineContent(table.children[1L].children[1L].id).text.text)
+        assertEquals("中文", after.inlineContent(table.children[2L].children[1L].id).text.text)
+        document.apply(MarkdownEdit(document.revision, change.inverseReplacements))
+        assertEquals(current.snapshot.toMarkdown(), document.toMarkdown())
+    }
+
+    @Test
+    fun `public semantic edits expose their resulting source selection without UI`() {
+        val document = MarkdownDocument.fromText("Hello **world**")
+        val parsed = document.parse()
+        val inline = parsed.inlineContent(parsed.root.children[0L].id)
+        val edit = inline.replaceText(MarkdownRange(6L, 11L), "Scoop")
+        edit.applyTo(document)
+        assertEquals("Hello Scoop", edit.after.text.text)
+        assertEquals(11L, edit.after.text.textAt(MarkdownPosition(edit.selection.end)).byteOffset)
+        val formatted =
+            edit.after.edit {
+                setStyle(MarkdownRange(0L, 5L), MarkdownInlineStyle.Emphasis, true)
+                select(MarkdownRange(0L, 5L))
+            }
+        val change = formatted.applyTo(document)
+        assertTrue(change.changed)
+        assertEquals("Hello Scoop", formatted.after.text.text)
+        assertTrue(document.snapshot() === formatted.after.snapshot)
+    }
+
+    @Test
+    fun `headless structure commands share source transactions and inverse edits`() {
+        val source = "# Title ###\r\n\r\n[x][ref]\r\n\r\n[ref]: old\r\n"
+        val document = MarkdownDocument.fromText(source)
+        val parsed = document.parse()
+        val change =
+            document.transform(parsed) {
+                setHeading(parsed.root.children[0L].id, 3)
+                setLinkTarget(parsed.root.children[1L].children[0L].id, "new path")
+            }
+        assertEquals(1L, document.revision)
+        assertEquals(
+            "### Title ###\r\n\r\n[x](<new path>)\r\n\r\n[ref]: old\r\n",
+            document.toMarkdown()
+        )
+        assertEquals(source, parsed.snapshot.toMarkdown())
+        document.apply(MarkdownEdit(document.revision, change.inverseReplacements))
+        assertEquals(source, document.toMarkdown())
+    }
+}

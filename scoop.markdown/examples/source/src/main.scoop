@@ -1,0 +1,36 @@
+package scoop.examples.markdown
+
+import scoop.markdown.*
+import scoop.platform.fs.Path
+
+/** Edits a heading while retaining an independently readable previous revision. */
+public fun updateNotes(): String {
+    val document = MarkdownDocument.fromText("# Notes\n\nA paragraph with **source formatting**.\n")
+    val previous = document.snapshot()
+    document.replace(MarkdownRange(2L, 7L), "Updated notes")
+    val output = StringWriter()
+    output.write(previous.read(previous.lineRange(0L)))
+    output.write("\n---\n")
+    document.writeTo(output)
+    return output.toString()
+}
+
+fun main(args: Array<String>) {
+    if (args.size == 1L) {
+        println(updateNotes())
+        return
+    }
+    if (args.size != 3L) {
+        println("Usage: markdown-source <input.md> <expanded-output.md>")
+        return
+    }
+    val result = processMarkdownFile(Path.fromString(args[1L]))
+    for (diagnostic in result.diagnostics) {
+        val source = result.sourceMap.sourceRange(diagnostic.range)
+        val line = result.source.lineAt(MarkdownPosition(source.start)) + 1L
+        println(args[1L] + ":" + line.toString() + ": " + diagnostic.message)
+        if (diagnostic.severity == MarkdownDiagnosticSeverity.Error)
+            throw IllegalStateException(Some("Markdown expansion failed"))
+    }
+    writeExpandedMarkdown(result, Path.fromString(args[2L]))
+}

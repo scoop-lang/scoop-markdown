@@ -1,0 +1,304 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.markdown.*
+import scoop.ui.*
+import scoop.ui.text.*
+import scoop.window.*
+
+/** A source byte position and its visual side at a wrap or bidirectional boundary. */
+public struct MarkdownSourceHit(val position: MarkdownPosition, val affinity: TextAffinity)
+
+internal class MdSourceLine(
+    val index: Long,
+    val range: MarkdownRange,
+    val fullRange: MarkdownRange,
+    val measurement: ParagraphMeasurement,
+    val display: TextDisplay,
+    val paintKey: PaintKey,
+    val generation: Long,
+    val number: MdSourceNumber? = None
+) {
+    val layout: TextLayout get() = measurement.layout
+    fun close() {
+        measurement.close()
+        number?.close()
+    }
+    fun position(
+        source: Long,
+        bias: MarkdownBias = MarkdownBias.After,
+        affinity: TextAffinity? = None
+    ): TextPosition {
+        val at =
+            if (source > range.end)
+                range.byteLength
+            else
+                if (source < range.start)
+                    0L
+                else
+                    source - range.start
+        val mapped =
+            display.toDisplay(
+                TextPosition(
+                    at,
+                    affinity ?:
+                        (
+                            if (bias == MarkdownBias.Before)
+                                TextAffinity.Upstream
+                            else
+                                TextAffinity.Downstream
+                        )
+                )
+            )
+        val boundaries = layout.graphemeBoundaries
+        val low = mdSourceBoundaryIndex(boundaries, mapped.byteOffset)
+        val offset =
+            if (low < boundaries.size && boundaries[low] == mapped.byteOffset)
+                mapped.byteOffset
+            else
+                if (bias == MarkdownBias.Before && low > 0L)
+                    boundaries[low - 1L]
+                else
+                    if (low < boundaries.size)
+                        boundaries[low]
+                    else
+                        layout.text.byteLength
+        return TextPosition(offset, mapped.affinity)
+    }
+    fun source(position: TextPosition): MarkdownPosition =
+        MarkdownPosition(range.start + display.toDocument(position).byteOffset)
+}
+
+internal class MdSourceRows(val rows: Array<MdSourceLine>) {
+    var owners = 1L
+    fun retain(): MdSourceRows {
+        owners += 1L;
+        return this
+    }
+    fun release() {
+        owners -= 1L;
+        if (owners == 0L)
+            for (row in rows)
+                row.close()
+    }
+}
+
+/** One independently retained layout with matching source, selection and scroll coordinates. */
+public class MarkdownSourceMeasurement internal constructor(
+    public val metrics: LayoutMetrics,
+    internal val snapshot: MarkdownSnapshot,
+    internal val selection: MarkdownSelection,
+    internal val marked: MarkdownRange?,
+    internal val inputRevision: Long,
+    public val sourceRange: MarkdownRange,
+    internal val heights: MdHeights,
+    internal val rows: Array<MdSourceLine>,
+    internal val scroll: ScrollLayout,
+    internal val requestRevision: ULong,
+    internal val padding: Double,
+    internal val cursorAffinity: TextAffinity,
+    ownership: MdSourceRows? = None,
+    internal val searchResult: MarkdownSearchResult? = None,
+    internal val folds: MdFoldProjection? = None,
+    internal val gutter: Double = 0.0,
+    public val lineNumberWidth: Double = 0.0
+): Closeable {
+    private val owner = ownership ?: MdSourceRows(rows)
+    private var closed = false
+    public val sourceRevision: Long get() = snapshot.revision
+    public val measuredLineCount: Long get() = rows.size
+    public val measuredLineNumberCount: Long get() =
+        if (lineNumberWidth > 0.0)
+            rows.size
+        else
+            0L
+    public val scrollSnapshot: ScrollSnapshot get() = scroll.snapshot
+    internal val contentX: Double get() = padding + gutter
+    public val lineIndices: Array<Long> get() =
+        Array<Long>(rows.size) { index -> rows[index].index }
+    internal val extent = MdSourceExtent(snapshot, sourceRange)
+    internal fun top(index: Long): Double = heights.prefix(index) - heights.prefix(extent.first)
+    internal fun retain(): MarkdownSourceMeasurement {
+        if (closed)
+            throw IllegalStateException(Some("Markdown source measurement is closed"))
+        return MarkdownSourceMeasurement(
+            metrics,
+            snapshot,
+            selection,
+            marked,
+            inputRevision,
+            sourceRange,
+            heights,
+            rows,
+            scroll,
+            requestRevision,
+            padding,
+            cursorAffinity,
+            Some(owner.retain()),
+            searchResult,
+            folds,
+            gutter,
+            lineNumberWidth
+        )
+    }
+    internal fun line(index: Long): MdSourceLine? {
+        for (row in rows)
+            if (row.index == index)
+                return Some(row)
+        return None
+    }
+    internal fun caret(
+        position: MarkdownPosition,
+        bias: MarkdownBias = MarkdownBias.After,
+        affinity: TextAffinity? = None
+    ): Rect? {
+        if (position.byteOffset < sourceRange.start || position.byteOffset > sourceRange.end)
+            return None
+        val row = line(snapshot.lineAt(position)) ?: return None
+        val rect =
+            row.layout.caret(row.position(position.byteOffset, bias, affinity)) ?: return None
+        return Some(
+            Rect(rect.x + contentX, rect.y + padding + top(row.index), rect.width, rect.height)
+        )
+    }
+    internal fun hit(point: Point): MarkdownSourceHit? {
+        val index =
+            mdVisibleIndex(
+                heights,
+                extent.index(heights.indexAt(point.y - padding + heights.prefix(extent.first)))
+            )
+        val row = line(index) ?: return None
+        val hit = row.layout.hitTest(Point(point.x - contentX, point.y - padding - top(index)))
+        return Some(MarkdownSourceHit(row.source(hit), hit.affinity))
+    }
+    public override fun close() {
+        if (closed)
+            return
+        closed = true
+        owner.release()
+    }
+}
+
+internal class MdSourceRow: Closeable {
+    val paragraph = ParagraphHost()
+    private val number = MdSourceNumberHost()
+    val key = PaintKey()
+    private var raw: String? = None
+    private var tabs = 0
+    private var width: Double? = None
+    private var style: TextStyle? = None
+    private var codeTheme: MarkdownCodeTheme? = None
+    private var syntaxTheme: MarkdownSourceTheme? = None
+    private var codeSpans: Array<MarkdownSourceSpan> = []
+    private var fonts: FontCollection? = None
+    private var fontRevision = -1L
+    private var content: StyledText? = None
+    private var display: TextDisplay? = None
+    private var generation = 0L
+
+    fun measure(
+        host: MarkdownSourceHost,
+        context: MeasureContext,
+        index: Long,
+        width: Double?
+    ): MdSourceLine {
+        val snapshot = host.current.snapshot
+        val range = host.lineRange(index)
+        val text = snapshot.read(range)
+        val nextStyle = host.style.text
+        val nextSpans = mdSourceColors(host.syntax, host.highlights, snapshot, range)
+        val sameTheme =
+            when (codeTheme) {
+                case Some(val value) -> value === host.style.codeTheme
+                case None -> false
+            }
+        val nextFonts = host.fonts
+        val sameSyntaxTheme =
+            when (syntaxTheme) {
+                case Some(val value) -> value === host.style.syntaxTheme
+                case None -> false
+            }
+        val sameStyle =
+            when (style) {
+                case Some(val previous) -> previous === nextStyle;
+                case None -> false
+            }
+        val sameFonts =
+            when (fonts) {
+                case Some(val previous) -> previous === nextFonts;
+                case None -> false
+            }
+        if (raw != Some(text) || tabs != host.options.tabSize) {
+            raw = Some(text)
+            tabs = host.options.tabSize
+            display = Some(mdSourceDisplay(text, tabs))
+            content = None
+        }
+        if (
+            (
+                when (content) {
+                    case Some(_) -> false;
+                    case None -> true
+                }
+            ) ||
+                !sameStyle ||
+                !sameTheme ||
+                !sameSyntaxTheme ||
+                !mdSourceSameColors(codeSpans, nextSpans)
+        ) {
+            content =
+                Some(
+                    mdSourceStyledText(
+                        display!!,
+                        nextStyle,
+                        host.style.syntaxTheme,
+                        host.style.codeTheme,
+                        nextSpans
+                    )
+                )
+            codeSpans = nextSpans
+            codeTheme = Some(host.style.codeTheme)
+            syntaxTheme = Some(host.style.syntaxTheme)
+            generation += 1L
+        }
+        if (this.width != width || !sameFonts || fontRevision != nextFonts.revision)
+            generation += 1L
+        this.width = width
+        style = Some(nextStyle)
+        fonts = Some(nextFonts)
+        fontRevision = nextFonts.revision
+        val measured =
+            paragraph.measure(
+                context,
+                Constraints(maxWidth = width),
+                nextFonts,
+                content!!,
+                Some(paragraphStyle { direction = host.scope.layoutDirection.textDirection() })
+            )
+        val label =
+            try {
+                if (host.options.lineNumbers)
+                    Some(number.measure(context, host, index + 1L))
+                else
+                    None
+            } catch (failure: Throwable) {
+                measured.close()
+                throw failure
+            }
+        return MdSourceLine(
+            index,
+            range,
+            host.lineRange(index, true),
+            measured,
+            display!!,
+            key,
+            generation,
+            label
+        )
+    }
+    public override fun close() {
+        paragraph.close()
+        number.close()
+    }
+}

@@ -1,0 +1,436 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.markdown.*
+import scoop.platform.time.MonotonicTimeSource
+import scoop.surface.*
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.window.*
+
+/** A document-level rich input region sharing the native preview's virtualized viewport. */
+public class MarkdownRichHost public constructor(
+    internal val scope: ComponentScope,
+    controller: MarkdownParseController,
+    style: MarkdownPreviewStyle = MarkdownPreviewStyle(),
+    options: MarkdownPreviewOptions = MarkdownPreviewOptions(),
+    readOnly: Boolean = false,
+    fonts: FontCollection? = None,
+    images: MarkdownImageController? = None,
+    documentUri: String = "",
+    initialScroll: ScrollState? = None
+): Closeable {
+    internal val preview =
+        MarkdownPreviewHost(
+            scope,
+            controller,
+            style,
+            options,
+            fonts,
+            images,
+            documentUri,
+            initialScroll
+        )
+    internal val editor: MarkdownEditorState get() = preview.editor
+    internal val window: Window get() = scope.nativeWindow
+    internal var input: MarkdownRichInput? = None
+    internal var raw: MdRichRawState? = None
+    internal var extensionContent: MarkdownTextContent? = None
+    internal var extensionIndex: MarkdownExtensionIndex? = None
+    internal var deferSourceActivation = false
+    internal var sourceEditingChanged: (MarkdownSourceRegion?) -> Unit = { _ -> Unit }
+    internal val editingSource: Boolean get() =
+        when (raw) {
+            case Some(_) -> true;
+            case None -> false
+        }
+    internal var local: MdRichRegionState? = None
+    internal var readOnly = readOnly
+    internal var closed = false
+    internal var connection: TextInputConnection? = None
+    internal var sessionEnabled = false
+    internal var retiring = false
+    internal var preferredX: Double? = None
+    internal var cursorAffinity = TextAffinity.Downstream
+    internal var caretVisible = true
+    internal var changed: (MarkdownChange) -> Unit = { _ -> Unit }
+    private val styles = state(MdRichStyles())
+    private val blocks = MdBlockControls()
+    private var subscription = editor.document.observe { change -> sourceChanged(change) }
+    internal val blink =
+        scope.createDeadline {
+            if (!closed && area.isFocusActive && window.isVisible && !window.isOccluded) {
+                caretVisible = !caretVisible
+                scope.requestFrame()
+            }
+        }
+    public val area: InputArea get() = preview.area
+    public val focus: FocusTarget get() = preview.focus
+    public val scroll: ScrollState get() = preview.scroll
+    public val state: MarkdownEditorState get() {
+        checkOpen();
+        return editor
+    }
+    public val isClosed: Boolean get() = closed
+    public val nativeInputState: TextInputState? get() {
+        checkOpen();
+        return when (raw) {
+            case Some(val active) -> Some(active.input.inputState)
+            case None -> input?.inputState
+        }
+    }
+    /** The active source island, sharing this host's native input area and document history. */
+    public val sourceRegion: MarkdownSourceRegion? get() {
+        checkOpen();
+        return raw?.region
+    }
+
+    /** Opens the original bytes in place. A current projection is required. */
+    public fun editSource(range: MarkdownRange): Boolean {
+        checkOpen()
+        try {
+            return mdOpenRichSource(this, range)
+        } finally {
+            refresh()
+            invalidate()
+            publishNative()
+        }
+    }
+
+    /** Accepts this source composition and restores the rendered view at the outer caret edge. */
+    public fun finishSource() {
+        checkOpen()
+        perform { mdFinishRichSource(this, true) }
+    }
+    public val measurement: MarkdownPreviewMeasurement? get() {
+        checkOpen();
+        return preview.measurement
+    }
+
+    init {
+        preview.rich = Some(this)
+        area.textInput = !readOnly && options.enabled
+    }
+
+    internal fun checkOpen() {
+        if (closed)
+            throw IllegalStateException(Some("Markdown rich host is closed"))
+        preview.checkOpen()
+    }
+
+    private fun sourceChanged(change: MarkdownChange) {
+        if (closed)
+            return
+        raw?.advance(change)
+        when (local) {
+            case Some(val state) -> if (!state.advance(change))
+                local = None
+            case None -> Unit
+        }
+        invalidate()
+        changed(change)
+    }
+
+    internal fun ownsOtherComposition(): Boolean =
+        when (editor.composition) {
+            case Some(val active) -> when (raw) {
+                case Some(val current) -> active.owner !== current.input.compositionOwner
+                case None -> when (input) {
+                    case Some(val current) -> active.owner !== current.compositionOwner
+                    case None -> true
+                }
+            }
+            case None -> false
+        }
+
+    internal fun refresh() {
+        mdRefreshRich(this)
+        val next = mdRichStyleValues(this)
+        if (next != styles.value)
+            styles.value = next
+        blocks.update(this)
+    }
+
+    public fun update(
+        controller: MarkdownParseController,
+        style: MarkdownPreviewStyle,
+        options: MarkdownPreviewOptions = MarkdownPreviewOptions(),
+        readOnly: Boolean = false,
+        focus: FocusOptions = FocusOptions(visibility = FocusVisibility.Always),
+        fonts: FontCollection? = None,
+        onChanged: (MarkdownChange) -> Unit = { _ -> Unit },
+        onOpenLink: (String) -> Unit = { _ -> Unit },
+        onSource: ((MarkdownRange) -> Unit)? = None,
+        images: MarkdownImageController? = None,
+        documentUri: String = "",
+        searchResult: MarkdownSearchResult? = None,
+        folding: MarkdownFoldingController? = None
+    ) {
+        checkOpen()
+        val rebound = controller !== preview.controller
+        if (rebound || readOnly != this.readOnly || options.enabled != preview.options.enabled) {
+            mdFinishRichSource(this, false)
+            retire()
+            input?.close()
+            input = None
+            preview.presentation = None
+            local = None
+        }
+        if (rebound)
+            subscription.close()
+        preview.update(
+            controller,
+            style,
+            options,
+            focus,
+            fonts,
+            onOpenLink,
+            onSource ?:
+                {
+                    range ->
+                    editSource(range);
+                    Unit
+                },
+            images,
+            documentUri,
+            searchResult,
+            folding
+        )
+        if (rebound)
+            subscription = editor.document.observe { change -> sourceChanged(change) }
+        this.readOnly = readOnly
+        changed = onChanged
+        area.textInput = !readOnly && options.enabled
+        refresh()
+        publishNative()
+    }
+
+    public fun measure(
+        context: MeasureContext,
+        constraints: Constraints
+    ): MarkdownPreviewMeasurement = preview.measure(context, constraints)
+    public fun scene(context: SceneContext, measurement: MarkdownPreviewMeasurement) {
+        preview.scene(context, measurement)
+    }
+    public fun hitTest(point: Point): MarkdownPreviewHit? = preview.hitTest(point)
+    public fun caret(position: MarkdownPosition, bias: MarkdownBias = MarkdownBias.After): Rect? =
+        preview.caret(position, bias)
+    public fun reveal(position: MarkdownPosition) {
+        preview.reveal(position)
+    }
+
+    public fun execute(command: TextEditCommand): Boolean {
+        checkOpen()
+        editor.checkEdit()
+        if (!preview.options.enabled || !area.isFocusActive || !area.scope.isInputAllowed)
+            return false
+        return mdRichCommand(this, command)
+    }
+
+    public fun setStyle(style: MarkdownInlineStyle, enabled: Boolean): Boolean {
+        checkOpen()
+        refresh()
+        return applyStyle(style, enabled)
+    }
+
+    public fun codeState(): MarkdownStyleState {
+        checkOpen()
+        return styles.value.code
+    }
+
+    public val canEditTarget: Boolean get() {
+        checkOpen()
+        return styles.value.target
+    }
+
+    public fun beginTarget(kind: MarkdownTargetKind): MarkdownTargetDraft? {
+        checkOpen()
+        editor.checkEdit()
+        refresh()
+        return mdRichBeginTarget(this, kind)
+    }
+
+    public fun applyTarget(
+        draft: MarkdownTargetDraft,
+        label: String,
+        destination: String,
+        title: String = ""
+    ): Boolean {
+        checkOpen()
+        editor.checkEdit()
+        refresh()
+        return mdRichApplyTarget(this, draft, label, destination, title, false)
+    }
+
+    public fun removeTarget(draft: MarkdownTargetDraft): Boolean {
+        checkOpen()
+        editor.checkEdit()
+        refresh()
+        return mdRichApplyTarget(this, draft, "", "", "", true)
+    }
+
+    public fun setCode(enabled: Boolean): Boolean {
+        checkOpen()
+        refresh()
+        return applyCode(enabled)
+    }
+
+    public fun toggleCode(): Boolean {
+        checkOpen()
+        refresh()
+        return applyCode(styles.value.code != MarkdownStyleState.On)
+    }
+
+    private fun applyCode(enabled: Boolean): Boolean {
+        if (styles.value.code == MarkdownStyleState.Unavailable)
+            return false
+        val active = input ?: return false
+        val before = editor.snapshot
+        try {
+            perform {
+                if (active.setCode(enabled))
+                    retire()
+            }
+        } catch (failure: IllegalArgumentException) {
+            if (editor.snapshot !== before)
+                throw failure
+            return false
+        }
+        return true
+    }
+
+    public fun executeClipboard(command: MarkdownClipboardCommand): Boolean {
+        checkOpen()
+        editor.checkEdit()
+        if (!preview.options.enabled || !area.scope.isInputAllowed)
+            return false
+        refresh()
+        return when (command) {
+            case CopyText -> mdClipboardCopy(preview, Some(command))
+            case CopyMarkdown -> mdClipboardCopy(preview, Some(command))
+            else -> if (readOnly)
+                false
+            else
+                mdRichPaste(this, Some(command))
+        }
+    }
+
+    public fun blockState(command: MarkdownBlockCommand): MarkdownStyleState {
+        checkOpen()
+        return blocks.state.value.value(command)
+    }
+
+    public fun executeBlock(command: MarkdownBlockCommand): Boolean {
+        checkOpen()
+        editor.checkEdit()
+        refresh()
+        return mdExecuteBlock(this, command)
+    }
+
+    public fun toggleStyle(style: MarkdownInlineStyle): Boolean {
+        checkOpen()
+        refresh()
+        return applyStyle(style, styles.value.value(style) != MarkdownStyleState.On)
+    }
+
+    /** Observable formatting from the current input, safe to read while rendering controls. */
+    public fun styleState(style: MarkdownInlineStyle): MarkdownStyleState {
+        checkOpen()
+        return styles.value.value(style)
+    }
+
+    private fun applyStyle(style: MarkdownInlineStyle, enabled: Boolean): Boolean {
+        if (styles.value.value(style) == MarkdownStyleState.Unavailable)
+            return false
+        val active = input ?: return false
+        perform {
+            if (active.setStyle(style, enabled))
+                retire()
+        }
+        return true
+    }
+
+    internal fun perform(origin: TextInputOrigin? = None, action: () -> Unit) {
+        try {
+            action()
+        }
+        finally {
+            refresh()
+            invalidate()
+            publishNative(origin)
+        }
+    }
+
+    internal fun invalidate() {
+        if (closed || !scope.isMounted)
+            return
+        area.setCaret(None, nativeInputState?.revision)
+        caretVisible = true
+        blink.cancel()
+        scope.requestLayout()
+    }
+
+    internal fun retire() {
+        if (scope.isMounted && !area.isClosed)
+            retiring = area.restartTextInput()
+    }
+
+    internal fun publishNative(origin: TextInputOrigin? = None) {
+        if (
+            closed ||
+                retiring ||
+                !sessionEnabled ||
+                !area.isFocusActive ||
+                readOnly ||
+                !preview.options.enabled ||
+                ownsOtherComposition()
+        )
+            return
+        val connection = connection ?: return
+        val rect = area.visibleCaretBounds ?: Rect(0.0, 0.0, 0.0, 0.0)
+        val caret =
+            LogicalRect(LogicalPosition(rect.x, rect.y), LogicalSize(rect.width, rect.height))
+        val state =
+            when (raw) {
+                case Some(val active) -> {
+                    if (active.input.documentRevision != editor.snapshot.revision)
+                        return
+                    active.input.snapshot(caret)
+                }
+                case None -> {
+                    val active = input ?: return
+                    if (active.content.snapshot !== editor.snapshot)
+                        return
+                    active.snapshot(caret)
+                }
+            }
+        window.publishTextInputState(connection, state, origin)
+    }
+
+    internal fun scheduleBlink() {
+        if (
+            !closed &&
+                area.isFocusActive &&
+                window.isVisible &&
+                !window.isOccluded &&
+                !blink.isScheduled
+        )
+            blink.schedule(MonotonicTimeSource.markNow() + Duration.milliseconds(500L))
+    }
+
+    public override fun close() {
+        if (closed)
+            return
+        editor.storage.checkMutation()
+        closed = true
+        var failure: Throwable? = None
+        failure = mdCleanup(failure) { subscription.close() }
+        failure = mdCleanup(failure) { input?.close() }
+        failure = mdCleanup(failure) { raw?.close() }
+        failure = mdCleanup(failure) { sourceEditingChanged(None) }
+        failure = mdCleanup(failure) { blink.close() }
+        failure = mdCleanup(failure) { preview.close() }
+        mdThrow(failure)
+    }
+}

@@ -1,0 +1,74 @@
+package scoop.ui.markdown
+
+import scoop.markdown.*
+import scoop.window.*
+
+internal struct MdRichStyles(
+    val emphasis: MarkdownStyleState = MarkdownStyleState.Unavailable,
+    val strong: MarkdownStyleState = MarkdownStyleState.Unavailable,
+    val strike: MarkdownStyleState = MarkdownStyleState.Unavailable,
+    val code: MarkdownStyleState = MarkdownStyleState.Unavailable,
+    val target: Boolean = false
+) {
+    fun value(style: MarkdownInlineStyle): MarkdownStyleState =
+        when (style) {
+            case Emphasis -> emphasis
+            case Strong -> strong
+            case Strikethrough -> strike
+        }
+}
+
+internal fun mdRichStyleValues(host: MarkdownRichHost): MdRichStyles {
+    if (host.readOnly || !host.preview.options.enabled || host.ownsOtherComposition())
+        return MdRichStyles()
+    val input = host.input ?: return MdRichStyles()
+    if (input.content.snapshot !== host.editor.snapshot)
+        return MdRichStyles()
+    return MdRichStyles(
+        input.styleState(MarkdownInlineStyle.Emphasis),
+        input.styleState(MarkdownInlineStyle.Strong),
+        if (input.content.profile.strikethrough)
+            input.styleState(MarkdownInlineStyle.Strikethrough)
+        else
+            MarkdownStyleState.Unavailable,
+        input.codeState(),
+        when (input.content.inlineContent) {
+            case Some(_) -> true
+            case None -> false
+        }
+    )
+}
+
+private val mdStrongKey =
+    ShortcutChord(ShortcutKey.Logical(LogicalKey.Character("b")), ShortcutModifiers(primary = true))
+
+private val mdEmphasisKey =
+    ShortcutChord(ShortcutKey.Logical(LogicalKey.Character("i")), ShortcutModifiers(primary = true))
+
+private val mdStrikeKey =
+    ShortcutChord(
+        ShortcutKey.Logical(LogicalKey.Character("x")),
+        ShortcutModifiers(primary = true, shift = true)
+    )
+
+private val mdCodeKey =
+    ShortcutChord(ShortcutKey.Logical(LogicalKey.Character("e")), ShortcutModifiers(primary = true))
+
+internal fun mdRichFormatKey(host: MarkdownRichHost, key: KeyEvent): Boolean {
+    if (mdCodeKey.matches(key))
+        return key.isRepeat || host.toggleCode()
+    val style =
+        if (mdStrongKey.matches(key))
+            MarkdownInlineStyle.Strong
+        else
+            if (mdEmphasisKey.matches(key))
+                MarkdownInlineStyle.Emphasis
+            else
+                if (mdStrikeKey.matches(key))
+                    MarkdownInlineStyle.Strikethrough
+                else
+                    return false
+    if (key.isRepeat)
+        return true
+    return host.toggleStyle(style)
+}

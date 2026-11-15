@@ -1,0 +1,139 @@
+schema = 1
+
+[cone]
+group = "scoop.tests"
+name = "window-native"
+version = "0.1.0"
+kind = "library"
+
+[[sources]]
+path = "src"
+when = { os = "darwin" }
+
+[[sources]]
+path = "windows"
+when = { os = "windows" }
+
+[native]
+cxx = true
+include = [{ sysroot = "include/gtk", when = { os = "linux", env = "gnu" } }]
+c_flags = ["-Wmost", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-nonportable-system-include-path"]
+objc_flags = ["-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter"]
+cxx_flags = ["-Wmost", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-nonportable-system-include-path"]
+
+[[native.sources]]
+path = "native/modes.m"
+when = { os = "darwin" }
+
+[[native.sources]]
+path = "native/input.m"
+when = { os = "darwin" }
+
+[[native.sources]]
+path = "native/commands.m"
+when = { os = "darwin" }
+
+[[native.sources]]
+path = "native/text.m"
+when = { os = "darwin" }
+
+[[native.sources]]
+path = "native/snapshot.m"
+when = { os = "darwin" }
+
+[[native.sources]]
+path = "native/editor.m"
+when = { os = "darwin" }
+
+[[native.sources]]
+path = "native/input_source.m"
+when = { os = "darwin" }
+
+[[native.sources]]
+path = "native/clipboard.m"
+when = { os = "darwin" }
+
+[[native.libraries]]
+name = "AppKit"
+kind = "framework"
+when = { os = "darwin" }
+
+[[native.libraries]]
+name = "CoreFoundation"
+kind = "framework"
+when = { os = "darwin" }
+
+[[native.libraries]]
+name = "CoreGraphics"
+kind = "framework"
+when = { os = "darwin" }
+
+[[native.libraries]]
+name = "Carbon"
+kind = "framework"
+when = { os = "darwin" }
+
+[[native.sources]]
+path = "windows/modes.c"
+when = { os = "windows" }
+
+[[native.sources]]
+path = "windows/input.c"
+when = { os = "windows" }
+
+[[native.sources]]
+path = "windows/text.cpp"
+when = { os = "windows" }
+
+[[native.libraries]]
+name = "ole32"
+when = { os = "windows" }
+
+[[native.libraries]]
+name = "uuid"
+when = { os = "windows" }
+
+[[native.libraries]]
+name = "user32"
+when = { os = "windows" }
+
+[[native.libraries]]
+name = "comctl32"
+when = { os = "windows" }
+
+[[sources]]
+path = "linux"
+when = { os = "linux", env = "gnu" }
+
+[[native.sources]]
+path = "linux/input.c"
+when = { os = "linux", env = "gnu" }
+
+
+[[native.libraries]]
+name = "gtk-4"
+kind = "dynamic"
+when = { os = "linux", env = "gnu" }
+
+[[native.libraries]]
+name = "glib-2.0"
+kind = "dynamic"
+when = { os = "linux", env = "gnu" }
+
+[[native.libraries]]
+name = "gobject-2.0"
+kind = "dynamic"
+when = { os = "linux", env = "gnu" }
+
+[[native.libraries]]
+name = "X11"
+kind = "dynamic"
+when = { os = "linux", env = "gnu" }
+
+[[native.libraries]]
+name = "Xtst"
+kind = "dynamic"
+when = { os = "linux", env = "gnu" }
+
+[[native.sources]]
+path = "native/dialog_paths.c"

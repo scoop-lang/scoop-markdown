@@ -1,0 +1,186 @@
+package scoop.ui.markdown
+
+import scoop.markdown.*
+
+/** Only modified text is retained; merged entries materialize strings only during replay. */
+internal class MdHistoryEntry(
+    val before: MarkdownSelection,
+    var after: MarkdownSelection,
+    val kind: MarkdownEditKind,
+    val original: Array<MarkdownReplacement>,
+    val inverse: Array<MarkdownReplacement>
+) {
+    private val typing =
+        if (
+            kind ==
+                MarkdownEditKind.Typing &&
+                before.collapsed &&
+                after.collapsed &&
+                original.size ==
+                1L &&
+                inverse.size ==
+                1L
+        )
+            Some(MdTypingHistory(original[0L].range, original[0L].text, inverse[0L].text))
+        else
+            None
+    private val pieces = ArrayList<String>()
+    private var start =
+        if (original.size == 1L)
+            original[0L].range.start
+        else
+            0L
+    private var length = 0L
+    private val simple =
+        original.size ==
+            1L &&
+            inverse.size ==
+            1L &&
+            before.collapsed &&
+            after.collapsed &&
+            (kind == MarkdownEditKind.Backspace || kind == MarkdownEditKind.Delete) &&
+            original[0L].text ==
+            ""
+
+    init {
+        if (simple) {
+            val text = inverse[0L].text
+            pieces.add(text)
+            length = text.byteLength
+        }
+    }
+
+    fun merge(
+        replacements: Array<MarkdownReplacement>,
+        inverseReplacements: Array<MarkdownReplacement>,
+        previous: MarkdownSelection,
+        next: MarkdownSelection,
+        nextKind: MarkdownEditKind
+    ): Boolean {
+        if (
+            kind !=
+                nextKind ||
+                previous !=
+                after ||
+                !previous.collapsed ||
+                !next.collapsed ||
+                replacements.size !=
+                1L ||
+                inverseReplacements.size !=
+                1L
+        )
+            return false
+        val replacement = replacements[0L]
+        when (typing) {
+            case Some(val value) -> {
+                if (!value.merge(replacement))
+                    return false
+                after = next
+                return true
+            }
+            case None -> if (!simple)
+                return false
+        }
+        when (kind) {
+            case MarkdownEditKind.Typing -> return false
+            case MarkdownEditKind.Backspace -> {
+                if (replacement.text != "" || replacement.range.end != start)
+                    return false
+                val removed = inverseReplacements[0L].text
+                pieces.add(removed)
+                start = replacement.range.start
+                length += removed.byteLength
+            }
+            case MarkdownEditKind.Delete -> {
+                if (replacement.text != "" || replacement.range.start != start)
+                    return false
+                val removed = inverseReplacements[0L].text
+                pieces.add(removed)
+                length += removed.byteLength
+            }
+            case MarkdownEditKind.Separate -> return false
+        }
+        after = next
+        return true
+    }
+
+    fun replacements(undo: Boolean): Array<MarkdownReplacement> {
+        when (typing) {
+            case Some(val value) -> return value.replacements(undo)
+            case None -> Unit
+        }
+        if (!simple)
+            return if (undo)
+                inverse
+            else
+                original
+        if (!undo)
+            return [MarkdownReplacement(MarkdownRange(start, start + length), "")]
+        val text = StringBuilder()
+        if (kind == MarkdownEditKind.Backspace) {
+            var index = pieces.size
+            while (index > 0L) {
+                index -= 1L;
+                text.append(pieces[index])
+            }
+        } else
+            for (piece in pieces)
+                text.append(piece)
+        return [MarkdownReplacement(MarkdownRange(start, start), text.toString())]
+    }
+}
+
+internal class MdHistory {
+    private val entries = ArrayList<MdHistoryEntry>()
+    private var position = 0L
+    private var mergeOpen = false
+    val canUndo: Boolean get() = position > 0L
+    val canRedo: Boolean get() = position < entries.size
+    fun undoEntry(): MdHistoryEntry = entries[position - 1L]
+    fun redoEntry(): MdHistoryEntry = entries[position]
+    fun didUndo() {
+        position -= 1L;
+        breakGroup()
+    }
+    fun didRedo() {
+        position += 1L;
+        breakGroup()
+    }
+    fun breakGroup() {
+        mergeOpen = false
+    }
+    fun clear() {
+        entries.clear();
+        position = 0L;
+        breakGroup()
+    }
+    fun append(
+        change: MarkdownChange,
+        before: MarkdownSelection,
+        after: MarkdownSelection,
+        kind: MarkdownEditKind
+    ) = appendEdits(change.replacements, change.inverseReplacements, before, after, kind)
+
+    fun appendEdits(
+        replacements: Array<MarkdownReplacement>,
+        inverse: Array<MarkdownReplacement>,
+        before: MarkdownSelection,
+        after: MarkdownSelection,
+        kind: MarkdownEditKind
+    ) {
+        if (replacements.size == 0L)
+            return
+        while (entries.size > position)
+            entries.removeAt(entries.size - 1L)
+        if (
+            !mergeOpen ||
+                position ==
+                0L ||
+                !entries[position - 1L].merge(replacements, inverse, before, after, kind)
+        ) {
+            entries.add(MdHistoryEntry(before, after, kind, replacements, inverse))
+            position += 1L
+        }
+        mergeOpen = kind != MarkdownEditKind.Separate
+    }
+}

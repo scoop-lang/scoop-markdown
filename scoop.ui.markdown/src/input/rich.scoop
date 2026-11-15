@@ -1,0 +1,232 @@
+package scoop.ui.markdown
+
+import scoop.markdown.*
+import scoop.window.*
+
+private fun mdCheckRichContent(editor: MarkdownEditorState, content: MarkdownTextContent) {
+    editor.storage.checkMutation()
+    if (content.snapshot !== editor.snapshot)
+        throw IllegalStateException(
+            Some("Rich Markdown input requires the current document snapshot")
+        )
+}
+
+/** Native semantic text for one inline block or a source region; the host owns the connection. */
+public class MarkdownRichInput public constructor(
+    public val editor: MarkdownEditorState,
+    content: MarkdownTextContent
+): Closeable {
+    internal val compositionOwner = MdCompositionOwner { cancelForState() }
+    private var current = content
+    private var input =
+        TextInputState(content.text.text, mdRichNativeSelection(content, editor.selection))
+    private var observedInput = editor.inputRevision
+    private var closed = false
+    internal var typingStyles = MdTypingStyles()
+    private var styledSelection = editor.selection
+
+    public constructor(editor: MarkdownEditorState, content: MarkdownInlineContent): this(
+        editor,
+        content.editableText()
+    ) {}
+
+    init {
+        mdCheckRichContent(editor, content)
+    }
+
+    private fun checkRead() {
+        editor.snapshot
+        if (closed)
+            throw IllegalStateException(Some("Markdown rich input fragment is closed"))
+    }
+
+    public val content: MarkdownTextContent get() {
+        checkRead();
+        return current
+    }
+    public val sourceRange: MarkdownRange get() {
+        checkRead();
+        return current.sourceRange
+    }
+    public val documentRevision: Long get() {
+        checkRead();
+        return current.snapshot.revision
+    }
+    public val inputState: TextInputState get() {
+        checkRead();
+        return input
+    }
+
+    public fun styleState(style: MarkdownInlineStyle): MarkdownStyleState =
+        mdRichInputStyle(this, style)
+
+    public fun codeState(): MarkdownStyleState = mdRichInputCode(this)
+
+    /** Changes selected code spans, or the code mode of subsequent native input. */
+    public fun setCode(enabled: Boolean): Boolean {
+        checkRead()
+        editor.checkEdit()
+        checkOwner()
+        val composing = editor.isComposing
+        editor.acceptComposition()
+        val relocated = synchronize()
+        editor.breakUndoGroup()
+        val selected = input.selection.range
+        if (selected.start == selected.end) {
+            typingStyles = typingStyles.withCode(enabled)
+            return composing || relocated
+        }
+        val edit = current.setCode(MarkdownRange(selected.start, selected.end), enabled)
+        val reversed = input.selection.anchor > input.selection.cursor
+        try {
+            editor.apply(edit.change, edit.selection, reversed)
+        } finally {
+            if (editor.snapshot === edit.after.snapshot)
+                synchronize(edit.after)
+        }
+        return true
+    }
+
+    /** True means the host must retire its native connection before publishing the new mapping. */
+    public fun setStyle(style: MarkdownInlineStyle, enabled: Boolean): Boolean {
+        checkRead()
+        editor.checkEdit()
+        checkOwner()
+        if (style == MarkdownInlineStyle.Strikethrough && !current.profile.strikethrough)
+            throw IllegalArgumentException(
+                Some("Strikethrough requires a profile with strikethrough enabled")
+            )
+        val composing = editor.isComposing
+        editor.acceptComposition()
+        val relocated = synchronize()
+        editor.breakUndoGroup()
+        val selected = input.selection.range
+        if (selected.start == selected.end) {
+            typingStyles = typingStyles.withStyle(style, enabled)
+            return composing || relocated
+        }
+        val edit = current.setStyle(MarkdownRange(selected.start, selected.end), style, enabled)
+        val reversed = input.selection.anchor > input.selection.cursor
+        try {
+            editor.apply(edit.change, edit.selection, reversed)
+        } finally {
+            if (editor.snapshot === edit.after.snapshot)
+                synchronize(edit.after)
+        }
+        return true
+    }
+
+    public fun snapshot(caret: LogicalRect): TextInputState {
+        checkRead()
+        return TextInputState(
+            input.surroundingText,
+            input.selection,
+            input.markedRange,
+            caret,
+            input.revision
+        )
+    }
+
+    private fun checkOwner() {
+        when (editor.composition) {
+            case Some(val active) -> if (active.owner !== compositionOwner)
+                throw IllegalStateException(
+                    Some("Another Markdown input fragment owns the composition")
+                )
+            case None -> Unit
+        }
+    }
+
+    /** Returns true when the caller must retire the native connection before using new mappings. */
+    public fun synchronize(): Boolean = synchronize(current)
+
+    public fun synchronize(content: MarkdownInlineContent): Boolean =
+        synchronize(content.editableText())
+
+    public fun synchronize(content: MarkdownTextContent): Boolean {
+        checkRead()
+        editor.storage.checkMutation()
+        checkOwner()
+        if (editor.isComposing)
+            return false
+        val next = content
+        mdCheckRichContent(editor, next)
+        val relocate = next !== current
+        if (!relocate && observedInput == editor.inputRevision)
+            return false
+        if (input.revision == 9223372036854775807L)
+            throw IllegalArgumentException(Some("Markdown input revision overflow"))
+        val updated =
+            TextInputState(
+                next.text.text,
+                mdRichNativeSelection(next, editor.selection),
+                revision = input.revision + 1L
+            )
+        if (next.snapshot !== current.snapshot || styledSelection != editor.selection)
+            typingStyles = MdTypingStyles()
+        current = next
+        input = updated
+        observedInput = editor.inputRevision
+        styledSelection = editor.selection
+        return relocate
+    }
+
+    internal fun prepare(
+        batch: TextInputBatch,
+        kind: MarkdownEditKind = MarkdownEditKind.Typing
+    ): MdInputPublication? {
+        checkRead()
+        editor.checkEdit()
+        checkOwner()
+        if (current.snapshot !== editor.snapshot || observedInput != editor.inputRevision)
+            throw IllegalStateException(Some("Markdown rich input fragment needs synchronization"))
+        return mdPrepareRichInput(this, input, batch, kind)
+    }
+
+    public fun apply(batch: TextInputBatch): Boolean {
+        val prepared = prepare(batch) ?: return false
+        return publish(prepared)
+    }
+
+    internal fun command(operations: List<TextInputOperation>, kind: MarkdownEditKind): Boolean {
+        val prepared =
+            prepare(TextInputBatch(Some(input.revision), operations), kind) ?: return false
+        return publish(prepared)
+    }
+
+    internal fun publish(prepared: MdInputPublication): Boolean {
+        try {
+            return editor.publishInput(prepared)
+        }
+        finally {
+            if (prepared.published) {
+                current = prepared.rich!!.after
+                input = prepared.current
+                observedInput = editor.inputRevision
+                styledSelection = editor.selection
+            }
+        }
+    }
+
+    internal fun cancelForState(): Boolean =
+        apply(
+            TextInputBatch(
+                Some(input.revision),
+                [TextInputOperation.Preedit("", None, TextReplacement.CurrentSelection)]
+            )
+        )
+
+    public override fun close() {
+        if (closed)
+            return
+        if (!editor.isClosed) {
+            editor.checkEdit()
+            when (editor.composition) {
+                case Some(val active) -> if (active.owner === compositionOwner)
+                    editor.acceptComposition()
+                case None -> Unit
+            }
+        }
+        closed = true
+    }
+}

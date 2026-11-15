@@ -1,0 +1,70 @@
+package scoop.markdown
+
+public enum MarkdownHeadingStyle {
+    Atx, Setext
+}
+
+public enum MarkdownAlignment {
+    None, Left, Center, Right
+}
+
+public enum MarkdownLinkStyle {
+    Inline, FullReference, CollapsedReference, ShortcutReference, Autolink
+}
+
+public struct MarkdownListInfo(
+    val ordered: Boolean,
+    val start: Long,
+    val marker: Char,
+    val tight: Boolean
+)
+
+public struct MarkdownFence(
+    val marker: Char,
+    val length: Long,
+    val indent: Long,
+    val closed: Boolean
+)
+
+/** A resolved destination and its original syntax, including reference forms. */
+public class MarkdownLinkTarget internal constructor(
+    public val destination: MarkdownText,
+    public val title: MarkdownText,
+    public val style: MarkdownLinkStyle,
+    public val label: String,
+    public val destinationRange: MarkdownRange?,
+    public val titleRange: MarkdownRange?
+)
+
+/**
+ * Each variant carries its syntax data. Paragraph, Heading and TableCell carry inline source
+ * without container prefixes; leaf Text carries decoded display text. Children live on the node.
+ */
+public enum MarkdownContent {
+    Document,
+    Paragraph(MarkdownText),
+    Heading(Int, MarkdownHeadingStyle, MarkdownText),
+    BlockQuote,
+    ListBlock(MarkdownListInfo),
+    ListItem(Boolean?),
+    ThematicBreak,
+    CodeBlock(MarkdownFence?, MarkdownText, MarkdownText),
+    HtmlBlock(MarkdownText),
+    ReferenceDefinition(String, MarkdownLinkTarget),
+    Table(Array<MarkdownAlignment>),
+    TableRow(Boolean),
+    TableCell(MarkdownAlignment, MarkdownText),
+    Text(MarkdownText),
+    CodeSpan(MarkdownText),
+    Emphasis,
+    Strong,
+    Strikethrough,
+    Link(MarkdownLinkTarget),
+    Image(MarkdownLinkTarget),
+    HtmlInline(MarkdownText),
+    SoftBreak,
+    HardBreak,
+    Extension(MarkdownExtensionValue),
+    FootnoteDefinition(String),
+    FootnoteReference(String)
+}

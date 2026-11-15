@@ -1,0 +1,148 @@
+# scoop.ui.markdown
+
+扩展识别由 `scoop.markdown` 提供，`MarkdownParsedDocument.sourceExtensions`／`previewExtensions` 分别保存原始与派生语法的索引。标准图片、代码与自定义语法共用名称、Inline／Block 形态和源码范围；展示用 `MarkdownParseOptions.presenters` 注册 `MarkdownExtensionPresenter`，分别选择 Inline／Block 的原生、源码或图像路径。图像适配按 `MarkdownImageKind.Extension(name)` 接入，配置方法见[图片与扩展图像](IMAGES.md)。扩展源码与普通文字使用同一份文档、选区和历史：富文本光标进入可见扩展时原位展开源码，离开后恢复展示。
+
+Markdown 编辑器的纯 Scoop UI Cone。文档内容和结构操作来自独立的 `scoop.markdown`；编辑状态负责源码选区、统一撤销／重做、组合输入与保存 revision。提供源码／所见即所得／双栏组件、共享后台解析、富文本预览、扩展图像、行内与跨块输入、链接／图片编辑以及代码／扩展的局部源码编辑。本轮范围为核心编辑与扩展框架，见[设计](../docs/ui/markdown/DESIGN.md)；具体合同见[规范](../docs/specs/SCOOP-UI-MARKDOWN-SPEC.md)，本机 1／5 MiB 基线及长段限制见[性能记录](../docs/ui/markdown/PERFORMANCE.md)。
+
+组合控件使用标准 `scoop.ui.component` 的可调分栏，应用在实际 run／mount 入口绑定 `ThemeSource`，与按钮等组件相同。示例使用 `context(ThemeSource(shadcnTheme())) { runUiApplication(...) }`。单独的源码／预览／富文本视图继续使用其显式样式，不要求分栏的主题上下文。
+
+开发期间从另一个 Cone 使用 path 依赖：
+
+```toml
+[dependencies]
+"scoop:scoop.markdown" = { version = "0.1.0", path = "../scoop.markdown" }
+"scoop:scoop.ui.markdown" = { version = "0.1.0", path = "../scoop.ui.markdown" }
+```
+
+```scoop
+import scoop.markdown.*
+import scoop.ui.markdown.*
+
+val document = MarkdownDocument.fromText("# Title\n")
+val editor = MarkdownEditorState(document)
+editor.setSelection(MarkdownSelection(MarkdownPosition(2L), MarkdownPosition(7L)))
+editor.replaceSelection("New title")
+editor.undo()
+editor.redo()
+editor.close()
+```
+
+选区使用 UTF-8 字节位置并保留方向与端点偏向。`replace`／`apply`／`transform` 都写入同一个借用文档；普通外部 Edit 也进入历史，Reset 清空历史。`Typing`／`Backspace`／`Delete` 只合并连续位置的同类输入，选区命令与结构事务结束合并。连续输入按片段保存历史，仅在 undo／redo 时拼接改动内容。
+
+文档库的 `parsed.inlineContent(nodeId).replaceText(...)`／`setStyle(...)` 返回准备好的 `MarkdownInlineEdit`。把结果交给 `editor.apply(prepared, reversed = false)`，源码差量与修改后的选区会进入同一个历史项；reversed 可保留反向选择。准备结果携带当前文档身份和 revision，不能应用到别的文档或新 revision。普通源码输入、语义命令与后续 undo／redo 共用历史。
+
+`parsed.splitBlock(id, range)`／`joinBlocks(first, second)` 返回带结果源码光标的 `MarkdownBlockEdit`，同样交给 `editor.apply(prepared)`，与行内操作共用一次发布和统一历史。列表延续、任务框和容器处理由文档 Cone 完成；UI 取得当前完整或局部解析后准备，不使用旧节点改写新快照。
+
+`editor.transform(syntax)` 也接受当前 `ParsedMarkdownRegion`，沿用同一历史和源码锚点规则。区域从完整解析的 `region(range)` 取得，通过 `after(change)` 前进后显式 `parse()`；文档库保留完整容器与区外引用上下文。局部树属于原文档的当前快照，不能把同 revision 数字的未发布分支当作当前文档操作。
+
+结构命令还可使用 `snapshot.prepare(edit)` 或 `syntax.prepareTransform { ... }` 先准备 `MarkdownChange`，在其 after 局部树中定位光标，再调用 `editor.apply(change, selection)`。正文和结果选区只发布一次，撤销／重做恢复相应光标；无效选区或过期 before 快照不发布。
+
+状态绑定创建线程，通过现有 `State` 参与 UI 读取追踪。编辑前检查 owner 和 UI 修改时机；关闭释放订阅与历史，不关闭文档。`markSaved(revision)` 只记录宿主实际保存完成的 revision；较旧的保存完成不会把后续修改标成已保存。
+
+`MarkdownSourceInput(editor, contextBytes = 4096L)` 为窗口输入准备局部 `TextInputState`，包含完整选区与左右上下文。`sourceRange` 明确片段与全文的坐标关系；`apply(TextInputBatch)` 先校验整个批次，再通过一次源码事务发布。它不持有窗口，宿主仍负责原生 connection／origin 和已接受帧的 caret 几何。`synchronize()` 返回 true 时必须退休旧连接后再发布新映射；组合期间不移动片段边界。
+
+`MarkdownRichInput(editor, parsed.inlineContent(nodeId))` 将当前段落、标题或单元格的显示文字接入同一原生输入协议；跨块选区可传入 `parsed.textContent(editor.selection.range)`。公开 content 为 `MarkdownTextContent`，通过 content.inlineContent 读取可用的单段结构。连续单段输入直接使用更新后的内容，不等待后台全文解析；多块上下文按源码顺序提供真实文字、块分隔和原子对象。输入的 UTF-8 范围逐项校验，整批只发布一次准备好的源码快照，结构保留后的光标与组合区使用文档库返回的新映射。
+
+`input.setStyle(style, enabled)` 对非空显示选区执行一次跨块格式事务，并保留选择方向；折叠光标只改变后续输入样式，不立即生成标记或历史。它先接受当前组合；后续预编辑可取消，连续提交仍按普通键入分组。外部文档修改、实际移动选区或重新创建输入片段清除显式样式覆盖。`input.styleState(style)` 包含此覆盖；setStyle 返回 true 时，自绘宿主须退休旧原生连接后使用新映射。
+
+`input.setCode(enabled)`／`codeState()` 对行内代码提供相同的选区与后续输入规则。代码模式先于文字插入生效；退出代码后的换行保留为普通文字，进入代码后的换行按代码 span 规则规范化，输入法选区随之换算。代码可与粗体等样式组合。
+
+源码和富文本共享唯一组合与历史，跨块取消可恢复原始定界符、实体、已删除的块及定向选区。剪切、粘贴、删除及整篇选择后的键入使用相同路径。跨块替换结束原来的键入分组；组合结束并收敛到单段后，宿主退休旧连接并切回单段输入。外部修改后通过 `synchronize(newContent)` 提供新解析的区域；返回 true 时退休旧原生连接。字体、图片与窗口仍由视图管理。
+
+`isComposing`／`markedRange` 反映即时预编辑；重复 Preedit 不逐条入历史，Commit／ClearPreedit／`acceptComposition()` 接受为一个历史项。空 Preedit 或 `cancelComposition()` 恢复组合前正文与选区。选择、格式命令和外部 Edit 接受组合；Reset 放弃它。undo／redo 遇到活动组合先取消，下一次再操作历史。保存前调用 `acceptComposition()` 再固定文档 snapshot。
+
+`markdownSourceEditor(editor)` 返回普通 View，可放在 Component.render 中。`MarkdownSourceStyle` 配置字体和颜色，`MarkdownSourceOptions` 配置自动换行、只读、缩进与输入上下文。需要自绘组合时用 `MarkdownSourceHost`，以 `measure` 返回的独立结果调用 `scene`，并在 LayoutResult.dispose 中关闭结果。宿主借用 editor 和字体，由所属 scope 管理关闭；试测不改变已接受帧的命中和候选窗几何。`hitTest` 返回源码位置与视觉 affinity，`caret` 可接受同一 affinity 来保留折行／双向文字边界。
+
+视图用物理行的高度索引定位可见区，只排版视口附近及光标行。一个很长的物理行仍完整 shaping；不把它切成会改变双向文字和连字的任意片段。支持方向选择、系统编辑命令、复制／剪切／粘贴、自动折行或横向滚动、Tab 缩进、拖选滚动、中文组合以及共享撤销。光标闪烁只请求绘制；字体、宽度和对应行内容变化才使文字排版失效。
+
+源码栏支持 Markdown 标记和正文样式高亮。三模式的源码栏自动使用 `parser.current?.sourceSyntax`；独立 `markdownSourceEditor`／`MarkdownSourceHost.update` 可传 `syntax = parser.current?.sourceSyntax`。`MarkdownSourceHighlights` 提供 parsed、snapshot、spans 与 `intersect(range)`，后台从已有语法和代码高亮派生，不额外解析。颜色范围使用源码 UTF-8 坐标，过期快照不用于新正文。`MarkdownSourceStyle.syntaxTheme` 使用 `MarkdownSourceTheme.Light`／`Dark` 或自定义颜色，代码 token 继续使用 codeTheme；颜色不改变文本、字体度量或历史。
+
+通过 `MarkdownSourceOptions(lineNumbers = true)` 打开一基物理行号。折行只显示一次，局部源码沿用全文行号，隐藏行不生成数字布局；可用 style.lineNumber 设置颜色。行号与折叠按钮共存，`measurement.lineNumberWidth` 和 `measuredLineNumberCount` 提供本帧的宽度与测量数量。编辑器示例已开启行号。
+
+`autoIndent`、`autoPairs`、`autoFences` 默认开启，可分别关闭。Enter 保留光标前的空格／Tab 缩进和本地换行；后台语法确认当前行是尚无正文的未闭合代码围栏时，自动补结束围栏并定位到正文。语法待更新、代码已有正文或结束围栏时仅执行普通换行，不等待解析。括号辅助支持 `()`、`[]`、`{}`：包裹选区并保留方向，在行尾／空白／右括号前配对，越过本视图补出的右括号，空配对中的 Backspace 一次删除两侧。转义、IME、粘贴、多项批次和显式范围替换按原文处理；底层 `MarkdownSourceInput.apply` 始终保持原样输入。一次补全与原输入共用一次事务，撤销恢复原文和选区。
+
+`MarkdownSourceRegion(editor, range)` 限定一个随文档差量移动的源码区域。把它作为 `region = Some(region)` 传给 `MarkdownSourceInput` 或 `markdownSourceEditor`，自绘宿主用 `MarkdownSourceHost(..., initialRegion = Some(region))` 并在 update 中继续传入 region。排版、原生周边文字、全选、删除和缩进均限于此范围，首尾可以位于物理行中间。它借用同一 editor，不另建文档、选区或历史；公开 range 在 Reset 或 close 后为 None，调用方在不用时关闭区域。源码测量的 sourceRange 属于该帧，旧测量保持有效。
+
+[源码文件编辑示例](examples/source-editor/README.md) 可打开已有 Markdown，并通过 Cmd-S 保存。库不自行写文件；`onChanged` 只传递源码差量。
+
+`MarkdownParseController(editor, executor, application.proxy(), options)` 在后台取得同一编辑文档的结构结果，供多个视图共享。executor 使用已有 `CoroutineExecutor`，由应用持有；例如应用可使用 `scoop.concurrent.multiThreadExecutor`。构造不启动任务，在正常 owner 回调或 onMount 中调用 `start()`；源码修改随后自动合并请求。`MarkdownParseOptions` 选择 profile，以及可选的 `MarkdownExpansionOptions(baseUri, resolver, processors)`。
+
+`status` 是可追踪的 Idle／Pending／Ready／Failed／Closed 状态。`current` 只返回当前已完成的解析，`latest` 还可保留正在更新前的显示结果；过期结果不能用于结构编辑。`MarkdownParsedDocument.source` 是原文解析，`preview` 是可选的展开解析，`processed` 保留依赖、诊断与来源映射。结构修改使用 `source`，生成内容保持只读。
+
+代码高亮随同一次后台解析生成，默认 `MarkdownDefaultCodeHighlighter` 使用纯 Scoop 和 scoop.regex，覆盖 Scoop、Kotlin、C／C++、Rust、Shell、JSON、TOML、Python、JavaScript／TypeScript、YAML 和 SQL。它基于 [Prism 词法规则](src/code/README.md)，未知语言完整显示原文。`MarkdownParseOptions(codeHighlighter = None)` 关闭高亮；自定义 `MarkdownCodeHighlighter.highlight(language, code)` 返回有序、不重叠的 `MarkdownCodeSpan`，范围使用代码字符串的 UTF-8 字节，颜色类别为 `MarkdownCodeKind`。提供器只在串行后台工作中调用，须保持配置不可变或自行同步，不读 UI State；同一提供器下未改动代码块复用结果，失败或非法范围只使该块恢复普通文字。
+
+`parsed.sourceHighlights` 与 `previewHighlights` 分别绑定原始和展开快照，提供 spans、diagnostics 和 `intersect(range)`。无展开时它们共用同一结果。源码栏与原位代码源码自动借用当前原文高亮；独立源码视图传入 `markdownSourceEditor(editor, highlights = controller.current?.sourceHighlights)`，自绘宿主在 `update` 中传入 highlights。过期快照的颜色不套用到新正文。`MarkdownPreviewStyle.codeTheme` 与 `MarkdownSourceStyle.codeTheme` 接收 `MarkdownCodeTheme.Light`、`.Dark` 或自定义调色板，只改变颜色，保持文字、Tab 映射、选区和历史。
+
+原位代码源码下方提供 Language / info 字段、Apply、Copy code 和 Done；Enter 同样提交完整信息，Copy code 仅复制解析后的正文。提交沿文档 Cone 的 setCodeInfo 进入共享历史，未知语言和属性允许原样编辑，撤销恢复原围栏与信息。后台解析等待只禁用 Apply，保留正文输入及语言字段中的原生组合；外部信息已变而草稿尚未提交时显示提示，防止覆盖新值。
+
+控制器最多执行一项后台解析、保存一份最新待处理快照和一个待交付结果；通过 ApplicationProxy 在 owner 发布，选区及保存状态变化不重解析。资源通知后显式 `refresh()`，配置变化用 `configure()`。处理器和 resolver 的方法由工作线程串行调用，其实现不应读写 UI State。语法扩展也会由局部结构编辑在 owner 调用；`MarkdownExtension.parse` 只处理输入，共用实例使用不可变配置或同步内部状态。处理错误进入对应请求的 Failed，下一次输入或刷新仍可恢复。
+
+关闭控制器会停止订阅及后续交付，不等待运行中的解析，不关闭借用的 editor／document／executor。应用在自己的退出收尾中 shutdown／join 线程池；投递被拒绝或应用关闭后丢弃消息，后台任务仍会完成登记和清理。`tests/parse.scoop` 在真实工作线程与原生应用消息循环中验证合并、过期结果、错误恢复、资源刷新和这条关闭路径。
+
+`markdownPreview(controller)` 返回共享解析结果上的原生预览 View，挂载时启动借用控制器，卸载时仅释放自己的视口资源。`MarkdownPreviewStyle` 配置文字、代码和颜色；`MarkdownPreviewOptions` 配置间距、虚拟化范围、统一表格最小列宽和缩进。`onOpenLink` 把 URI 交给应用；`onSource` 把行内扩展的原始源码范围交给应用。预览显示源码选区、支持拖选、全选和复制所见文字，修改正文继续通过同一个 editor。
+
+自绘组合可使用 `MarkdownPreviewHost.measure`／`scene`；LayoutResult 负责关闭每次独立测量。`measurement.parsed` 表明实际显示的解析，`hitTest` 同时提供原文／预览位置与生成内容标记；`caret` 和 `reveal` 接受原文位置。旧解析等待更新时仍可显示，但不会被用作当前源码命中。表格按实际行虚拟化，代码按实际行虚拟化，普通段落保持完整 shaping。图片及扩展图像使用原子对象与原始范围；点击仍可定位源码。
+
+`markdownRichEditor(controller, readOnly = false)` 返回原生富文本 View；`MarkdownRichHost` 用于自绘 Element，使用同一套预览样式、布局参数、字体与图像控制器。段落、标题和单元格中的普通文字可直接输入、选择、复制／粘贴和修改样式；`setStyle`／`toggleStyle` 支持当前跨块选区及折叠光标的后续输入，`styleState` 可用于状态展示。Primary-B、Primary-I、Primary-Shift-X 分别切换粗体、斜体与删除线，混合选区切为全部启用。方向键使用真实文字排版，连续键入和组合不等待全文解析。readOnly 保留选择与复制。Enter 拆分段落／标题并延续列表，空项退出一级；边界 Backspace／Delete 合并同容器相邻段落。列表 Tab／Shift-Tab 调整层级，表格 Tab／Shift-Tab 按单元格导航，末格 Tab 或末行 Enter 新增正文行。表格中的 TSV 粘贴按矩形写入，跨块普通文字替换保留未选内容和容器边界。
+
+富文本光标进入扩展范围时，在原位置编辑完整源码：Inline 保留同一段落／标题／单元格中的前后文字，Block 按源码物理行显示，复用同一富文本输入区与虚拟视口。点击源码入口也可展开；普通拖选和跨片段选区不自动展开其他扩展。`MarkdownRichHost.editSource(range)`、`finishSource()` 和 `sourceRegion` 提供自绘宿主的显式入口与当前范围；`onSource` 可接管显式源码请求。
+
+临时删除闭合符或使图片语法失效时，活动区间仍随文档修改推进。光标离开且没有组合时恢复展示；Done 或无组合时的 Escape 把光标放到外侧边界，组合期间 Escape 先取消组合。只读、禁用和未聚焦的视图不自动进入源码；双栏源码侧编辑时，另一侧保留普通预览。代码工具条保留 Language / info、Apply 和 Copy code，正文直接在原块位置编辑。
+
+活动区域直接使用本次编辑后的局部树生成显示，其他行共享后台投影；按键只替换活动行布局。`measurement.sourceRevision` 是本帧实际显示和命中的文档版本，`measurement.parsed` 可以仍是后台基线。块命令按需解析当前 `MarkdownRegion`，多行投影以局部片段替换原来的行，其他行保持共享；Enter 后的新段落不等待全文解析便可接收输入。旧 native 连接先退休，新连接启用后发布对应片段。未变化的 mdBook 展开和脚注显示顺序仍保留，完整后台结果到达后收敛。区外修改或区域边界变化会等待新的完整结果。试测和丢弃帧保留各自的资源，候选窗几何只来自匹配的文档／输入版本。图片、公式、HTML、脚注引用保持原子对象，通过 `onSource` 定位源码；HTML 和脚注的可编辑投影与原生 U+FFFC 坐标一致。
+
+向 `markdownPreview`、`markdownRichEditor` 或宿主的 `update` 传入借用的 `images: MarkdownImageController` 与文档 URI，即可按可见范围加载图片。提供本地 PNG／JPEG、Mermaid CLI 和 MathJax＋rsvg-convert 适配，也可按 `MarkdownImageRenderer` 注册自定义图像扩展。配置、版本、基线和关闭约定见[扩展图像说明](IMAGES.md)。
+
+`MarkdownEditorViewState(editor, mode = MarkdownEditorMode.Wysiwyg)` 配合 `markdownEditor(viewState, controller)` 提供三模式组件。`setMode` 切换视图并保留正文／历史；`setRightReadOnly` 可将双栏右侧设为只读；`setSynchronizeScroll` 控制按源码锚点的双向滚动，`setSourceFraction` 调整分栏比例。两侧的 ScrollState 和 FocusHandle 独立稳定，模式和纯布局设置不重复序列化文档；整次修改只触发一次组合控件的 `onChanged`。
+
+`markdownFormattingToolbar(viewState)` 是可选的普通 View，提供粗体、斜体、删除线、行内代码以及链接／图片按钮，沿用应用的 `ThemeSource`。viewState 的 `styleState`、`setStyle` 和 `toggleStyle` 也可供应用自建工具栏；操作成功后返回富文本焦点。纯源码模式、只读或未挂载富文本时为 Unavailable，命令不修改文档；混合格式以 Mixed 展示。独立富文本编辑组件本身仍只依赖显式样式，不要求主题上下文。
+
+RichHost 和 viewState 提供 `setCode`／`toggleCode`／`codeState`，Primary-E 切换代码；表格中无法表示为代码 span 的内容返回 false 并保持原文。`canEditTarget` 表示当前是否支持单个行内块的链接或图片操作；`beginTarget(MarkdownTargetKind.Link)`／`Image` 返回 `MarkdownTargetDraft`，保存当前选区并提供 label、destination、title、labelEditable、canRemove。宿主面板用 `applyTarget(draft, label, destination, title)` 或 `removeTarget(draft)` 发布一次事务；文档或选区改变后草稿失效，方法返回 false。`draft.isCurrent(editor)` 可用于面板状态。未修改的链接文字保留样式，含图片等对象时 labelEditable 为 false；图片替代文字可单独编辑。
+
+工具栏自带 Link／Image 面板，可修改文字／替代文字、URI 与可选标题，支持 Apply、Cancel 和移除。打开已有引用目标只修改当前使用点，共享定义不变。新链接没有文字时使用 URI；自定义文件选择器或上传流程应先获得 URI，再调用相同接口。内置面板不执行文件读写，展示沿用 MarkdownImageController。链接／图片编辑限于一个行内块；跨块文字格式化继续使用上述样式命令。
+
+默认不抢焦点；显式 `requestFocus(MarkdownEditorPane.Source)` 可在挂载前请求可见栏。显式 `showSource(range)` 把当前范围起点定位到源码栏，必要时从 Wysiwyg 转双栏；默认扩展点击使用上述原位源码编辑并保留当前模式。`MarkdownEditorOptions` 统一配置整体只读、两栏最小宽度及各自布局参数。一个 viewState 只能绑定一个控件；多个 viewState 可以共享同一 editor。所有 Host 的可选 `initialScroll` 允许自绘宿主保留滚动状态，viewport 与原生资源仍随 Host 关闭。
+
+[三模式示例](../markdown-editor/README.md) 提供模式、格式工具栏、只读、同步开关、撤销／重做和 Cmd-S 保存；[预览示例](examples/preview/README.md) 和[源码示例](examples/source-editor/README.md) 展示单独使用。本机验证使用 `scoop check ... --tests --release` 与 `scoop test ... --release`。库内测试覆盖状态、历史、输入批次、组合、高度索引、显示映射和后台解析；`tests-cones/source`、`tests-cones/preview`、[富文本原生测试](tests-cones/rich/README.md) 和[三模式原生测试](tests-cones/editor/README.md) 使用本机窗口验证大文档、滚动、几何、输入与资源释放。完整功能和性能结果以[实施记录](../docs/markdown/PROGRESS.md)为准。
+
+`markdownBlockToolbar(viewState)` 提供 Block、List、Table 菜单，可与格式工具栏并用。RichHost／viewState 的 `blockState(command)`、`executeBlock(command)` 接收 `MarkdownBlockCommand`，供应用自建菜单使用。支持段落／H1–H6、增减引用层级、无序／有序／任务列表、缩进／提升／解除条目、显式从 1 重编号、代码块、分隔线和表格插入；Primary-0／1…6 切换段落／标题。代码转换后直接在该块原位置编辑源码。
+
+表格菜单支持上下插行、左右插列、删除与四种列对齐，新增／删除后定位有效单元格；禁止删除表头和最后一列。`InsertTable(rows, columns)` 的行数包含表头，菜单默认 3 × 3；`InsertTableRow(before)`／`InsertTableColumn(before)` 以当前单元格为参照。跨单元格选区不能执行针对单个单元格的行列命令。列表类型作用于当前层级的整份列表，任务命令在全部为任务时移除任务框，否则补齐并保留已勾选状态。
+
+块命令先准备当前局部结构，接受本输入面的组合后作为一个事务发布；菜单关闭后恢复输入焦点，源码模式、只读、不相容结构和未挂载状态返回 false。查询状态读取已有投影，普通键入不触发同步区域解析；在同一块内移动光标、对同一列表查询时复用结构状态。标题转段落保留前后独立块，源码选区与撤销方向沿统一历史处理。
+
+## 全文查找替换
+
+`MarkdownSearchController(viewState, executor, proxy)` 借用同一视图状态和后台 executor。`configure(query, selectFirst)` 发起源码搜索，`current` 只返回仍匹配当前文档的结果，`currentIndex` 对应真实源码选区。后台请求保留正在执行的一项与最新待处理请求，过期结果不覆盖当前查询；正文改变立即废弃旧替换范围，关闭查找栏后不随键入继续全文搜索。
+
+把 controller 传给 `markdownSearchBar(controller)` 和 `markdownEditor(..., search = Some(controller))`，即可使用原生查找／替换字段、大小写／整词／正则选项、结果计数及可见范围高亮。Primary-F 打开查找，Primary-Alt-F（F 的物理键位）打开替换，Primary-G／Shift-G 前后导航；查询字段的 Enter／Shift-Enter 导航，Escape 在组合结束后关闭并返回活动栏。查找字段使用自己的原生输入和撤销状态，结果定位保留字段焦点。源码、富文本、双栏及局部源码共享原文档坐标；单独的 View／Host 可传 `searchResult`，样式的 `searchMatch` 设置颜色。
+
+`show(replace)`／`hide()`、`next(backwards)`、`replaceCurrent(text, template)` 和 `replaceAll(text, template)` 可用于应用菜单。替换只在当前视图已挂载且活动栏可编辑时执行，经共享 editor 发布；全部替换是一个撤销项，单次替换后从插入末尾继续导航。正则字段启用捕获模板，无效表达式或模板在栏内显示错误。搜索的是原始 Markdown，包括标记、URI 与指令；不搜索 include 派生内容。调用方关闭 controller，它不关闭借用的编辑状态或 executor。示例在 ComponentScope 中用 resource 管理其生命周期。
+
+## 剪贴板格式
+
+默认复制／剪切同时写入所见 `text/plain` 和语义 `text/markdown`；源码面两者均为原选区。富文本默认粘贴按 `text/markdown`、`text/html`、`text/plain` 的存在性依次选择；空的高优先级表示不会回退。Markdown 通过文档 Cone 的 replaceMarkdown 语义插入，HTML 先用 importMarkdownHtml 转换，普通文本按字面文字处理。源码栏默认读取 Markdown／普通文本并原样插入；显式 PasteHtml 才转换 HTML。原位扩展源码只接受字面文本，不执行 HTML／TSV 导入或富文本格式操作。一次粘贴独立撤销，先接受当前组合，剪切先成功写剪贴板再删除。生成内容的 Markdown 表示保留原指令。
+
+`MarkdownRichHost.executeClipboard`、`MarkdownSourceHost.executeClipboard` 和 `MarkdownEditorViewState.executeClipboard` 接受 `MarkdownClipboardCommand.CopyText / CopyMarkdown / PasteText / PasteMarkdown / PasteHtml / PasteTableTsv`，可直接由菜单或工具栏调用。CopyMarkdown 同时将源码作为纯文本提供；PasteText 只读普通文本；PasteMarkdown 读取 Markdown，缺失时显式解析普通文本；PasteHtml 读取 HTML，缺失时把普通文本解释为 HTML。HTML 转换使用当前语法 profile，无法表示的内容保留原 HTML；转换范围见 [文档库说明](../scoop.markdown/README.md)。PasteTableTsv 只读取普通文本，并只在富文本表格中执行矩形操作，默认粘贴不猜测 Tab 内容。只读保留复制，禁用修改；禁用组件或未挂载的 ViewState 返回 false。ViewState 按活动栏路由，成功后恢复该栏焦点。
+
+## 大纲和位置导航
+
+创建 `MarkdownNavigationController(viewState, parser)`，分别传给 `markdownOutline`、`markdownNavigationBar` 和 `markdownEditor(..., navigation = Some(controller))`。调用方管理 controller 生命周期；大纲和导航栏都可独立组合，示例使用 `scope.resource`。
+
+`current`／`latest` 提供当前和上次标题索引，`activeHeading` 跟随源码选区；大纲用 VirtualList 仅挂载可见标题，解析待完成时保留旧标题但禁止跳转。`goTo(position)`、`goToLine(line, column)`、`goToHeading(index)`、`goToLink(destination)` 以共享源码选区定位当前活动栏，保持编辑模式。行列 API 从零计数，原生字段显示从一计数的 line:column；Primary-L 聚焦字段，Enter 跳转，无组合时 Escape 返回编辑栏。
+
+`goBack`／`goForward` 与 `canGoBack`／`canGoForward` 管理最近 128 个显式跳转位置。普通修改映射已有位置，外部 Reset 清空历史，后退恢复反向选区；导航不会添加正文撤销项，只读仍可导航。TOC 和内部链接通过同一 controller 记录跳转；未配置 controller 的预览仍能定位本文件锚点。
+
+Editor profile 的 [TOC] 按最终预览标题派生只读目录，包括 include 生成的标题。生成标题通过 sourceMap 返回所属指令；原文件保存时保留 [TOC]。预览脚注编号跳转到定义，活动编辑片段中的脚注原子仍提供源码编辑。缺失锚点和外部 URI 交给 onOpenLink。
+
+活动富文本栏的折叠光标遵守可编辑文字边界：跳转到标题／列表隐藏标记时定位到同一块的文字起点；源码和只读预览保留请求的源码位置。内部链接点击先保留跳转前的选区，再记录导航，后退不会退到链接点击造成的临时选区。
+
+## 标题、代码与 front matter 折叠
+
+创建 `MarkdownFoldingController(viewState, parser)`，传给 `markdownEditor(..., folding = Some(controller))`。可选 `markdownFoldingToolbar(controller)` 提供当前区域和全部区域的折叠／展开；各栏保留首行旁的三角按钮。独立的 `markdownSourceEditor`、`markdownRichEditor`、`markdownPreview` 及 Host.update 同样接收 folding；原位源码完整展示自己的活动范围。示例用 `scope.resource` 管理控制器，关闭它不会关闭借用的文档或解析器。
+
+`parser.current?.sourceFolds` 与 `controller.current` 提供后台建立的 `MarkdownFoldIndex`；`regions` 和 `at(position)` 返回 `MarkdownFoldRegion`，包含 snapshot、node、kind、range、header、hidden。标题使用章节范围，保留完整 ATX／Setext 标题；代码保留围栏首行，front matter 保留首行定界符。代码折叠只影响源码，标题与 front matter 同时影响预览，Mermaid 等图像仍使用现有展示接口。
+
+`setCollapsed(region, value)`、`toggleAt(position)`、`collapseAll()`、`expandAll()` 返回状态是否改变，`isCollapsed(region)` 查询当前状态。过期区域不能修改新结构；文档变化映射折叠位置，修改头部或 Reset 会展开相应区域。展开父标题保留已收起的子标题。折叠不改 Markdown，也不增加撤销项，只读仍可使用。
+
+收起正文时将隐藏的普通选区移到保留的头部；包含正在输入的 IME 组合范围时拒绝收起，全部收起跳过这些区域。搜索、导航、程序化光标和局部源码入口自动展开目标。上下／翻页／跨行左右移动跳过隐藏区；光标删除若要跨过隐藏正文，先展开并消耗本次删除，明确选中的完整范围仍可复制、删除和格式化。两栏按整段高度跳过隐藏内容，展开复用未变化的测量。

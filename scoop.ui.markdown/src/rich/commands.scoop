@@ -1,0 +1,207 @@
+package scoop.ui.markdown
+
+import scoop.graphics.text.TextAffinity
+import scoop.markdown.*
+import scoop.text.*
+import scoop.window.*
+
+internal fun mdRichCommand(host: MarkdownRichHost, command: TextEditCommand): Boolean {
+    host.refresh()
+    val editor = host.editor
+    if (host.editingSource)
+        when (command) {
+            case Move(_, _) -> Unit
+            else -> return mdRichRawCommand(host, command)
+        }
+    when (command) {
+        case Move(val movement, val extend) -> {
+            mdEnterRichSource(host, movement, extend)
+            when (mdPresentationModel(host.preview.presentation, host.preview.controller.current)) {
+                case Some(_) -> Unit
+                case None -> return false
+            }
+            val before = editor.selection
+            val result =
+                if (
+                    !extend &&
+                        !before.collapsed &&
+                        (movement == TextMovement.Left || movement == TextMovement.Right)
+                )
+                    mdRichCollapse(host, movement == TextMovement.Right)
+                else
+                    if (
+                        !extend &&
+                            !before.collapsed &&
+                            (
+                                movement ==
+                                    TextMovement.Backward ||
+                                    movement ==
+                                    TextMovement.Forward ||
+                                    movement ==
+                                    TextMovement.Left ||
+                                    movement ==
+                                    TextMovement.Right
+                            )
+                    ) {
+                        val end = movement == TextMovement.Forward || movement == TextMovement.Right
+                        MdSourceMove(
+                            MarkdownPosition(
+                                if (end)
+                                    before.range.end
+                                else
+                                    before.range.start
+                            ),
+                            if (end)
+                                TextAffinity.Upstream
+                            else
+                                TextAffinity.Downstream,
+                            None
+                        )
+                    } else
+                        mdRichMove(host, movement)
+            val bias =
+                if (result.affinity == TextAffinity.Upstream)
+                    MarkdownBias.Before
+                else
+                    MarkdownBias.After
+            host.perform {
+                host.preview.folding?.reveal(result.position)
+                editor.setSelection(
+                    MarkdownSelection(
+                        if (extend)
+                            before.anchor
+                        else
+                            result.position,
+                        result.position,
+                        if (extend)
+                            before.anchorBias
+                        else
+                            bias,
+                        bias
+                    )
+                )
+            }
+            host.cursorAffinity = result.affinity
+            host.preferredX = result.preferredX
+            host.preview.reveal(result.position)
+        }
+        case Copy -> return mdClipboardCopy(host.preview)
+        case Cut -> {
+            if (host.readOnly)
+                return true
+            val input = host.input ?: return false
+            if (!editor.selection.collapsed) {
+                if (!mdClipboardCopy(host.preview))
+                    return false
+                host.perform {
+                    input.command(
+                        [TextInputOperation.Commit("", TextReplacement.CurrentSelection)],
+                        MarkdownEditKind.Separate
+                    )
+                }
+            }
+        }
+        case Paste -> return mdRichPaste(host)
+        case Delete(val deletion) -> {
+            if (host.readOnly)
+                return true
+            val input = host.input ?: return false
+            val selected = input.inputState.selection.range
+            if (mdRichExposeDeletion(host, deletion)) {
+                host.scope.requestLayout()
+                return true
+            }
+            val atBoundary =
+                selected.start ==
+                    selected.end &&
+                    (
+                        deletion ==
+                            TextDeletion.Backward &&
+                            selected.start ==
+                            0L ||
+                            deletion ==
+                            TextDeletion.Forward &&
+                            selected.end ==
+                            input.content.text.byteLength
+                    )
+            if (atBoundary) {
+                val syntax = host.local?.syntax(editor.selection) ?: None
+                val joined =
+                    when (syntax) {
+                        case Some(val current) -> mdRichJoin(
+                            current,
+                            editor.selection,
+                            deletion == TextDeletion.Backward
+                        )
+                        case None -> None
+                    }
+                when (joined) {
+                    case Some(val edit) -> {
+                        mdRichStructure(host, edit);
+                        return true
+                    }
+                    case None -> Unit
+                }
+            }
+            val range = mdRichDelete(host, deletion) ?: return false
+            val kind =
+                when (deletion) {
+                    case Backward -> MarkdownEditKind.Backspace
+                    case Forward -> MarkdownEditKind.Delete
+                    else -> MarkdownEditKind.Separate
+                }
+            host.perform {
+                input.command(
+                    [
+                        TextInputOperation.Commit(
+                            "",
+                            TextReplacement.Range(Utf8Range(range.start, range.end))
+                        )
+                    ],
+                    kind
+                )
+            }
+        }
+        case SelectAll -> host.perform {
+            editor.setSelection(
+                MarkdownSelection(
+                    MarkdownPosition(0L),
+                    MarkdownPosition(editor.snapshot.byteLength)
+                )
+            )
+        }
+        case Undo -> if (!host.readOnly)
+            host.perform { editor.undo() }
+        case Redo -> if (!host.readOnly)
+            host.perform { editor.redo() }
+        case Cancel -> {
+            if (!editor.isComposing || host.ownsOtherComposition())
+                return false
+            host.perform { editor.cancelComposition() }
+        }
+        case InsertNewline -> {
+            if (host.readOnly)
+                return true
+            val state = host.local ?: return false
+            val syntax = state.syntax(editor.selection) ?: return false
+            val edit = mdRichNewline(syntax, editor.selection) ?: return false
+            mdRichStructure(host, edit)
+        }
+        case InsertTab -> {
+            if (!mdRichTab(host, false))
+                return false
+        }
+        case InsertBacktab -> {
+            if (!mdRichTab(host, true))
+                return false
+        }
+    }
+    when (command) {
+        case Move(_, _) -> Unit
+        else -> {
+            host.cursorAffinity = TextAffinity.Downstream;
+            host.preferredX = None
+        }
+    }
+    return true
+}

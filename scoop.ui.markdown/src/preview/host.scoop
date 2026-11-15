@@ -1,0 +1,366 @@
+package scoop.ui.markdown
+
+import scoop.collections.HashMap
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.markdown.*
+import scoop.surface.FocusVisibility
+import scoop.ui.*
+import scoop.window.*
+
+internal class MdPreviewAnchor(
+    val source: MarkdownAnchor,
+    val key: MdDisplayKey,
+    val cell: Long,
+    val text: TextPosition,
+    val delta: Double,
+    val request: ULong
+)
+
+/** Native preview of a borrowed shared parser; it owns viewport resources, never the document. */
+public class MarkdownPreviewHost public constructor(
+    internal val scope: ComponentScope,
+    initialController: MarkdownParseController,
+    initialStyle: MarkdownPreviewStyle = MarkdownPreviewStyle(),
+    initialOptions: MarkdownPreviewOptions = MarkdownPreviewOptions(),
+    private var suppliedFonts: FontCollection? = None,
+    initialImages: MarkdownImageController? = None,
+    initialDocumentUri: String = "",
+    initialScroll: ScrollState? = None
+): Closeable {
+    internal var controller = initialController
+    internal val editor: MarkdownEditorState get() = controller.editor
+    internal var style = initialStyle
+    internal var options = initialOptions
+    internal var imageController = initialImages
+    internal var imageLease = initialImages?.bind()
+    internal var documentUri = initialDocumentUri
+    internal val fonts: FontCollection get() = suppliedFonts ?: scope.defaultFonts
+    internal var closed = false
+    internal var document: MarkdownParsedDocument? = None
+    internal var presentation: MdRichPresentation? = None
+    internal var searchResult: MarkdownSearchResult? = None
+    internal var heightRegions: MdRichRegionRows? = None
+    internal var heightRaw: MdRichRawProjection? = None
+    internal var rich: MarkdownRichHost? = None
+    internal var heights = mdHeightRun(0L, mdPreviewEstimate(initialStyle, initialOptions))
+    internal var folding: MarkdownFoldingController? = None
+    internal var folded: MdFoldProjection? = None
+    internal var layoutFolds: MdFoldProjection? = None
+    internal var foldedHeights = heights
+    internal var visibleHeights = heights
+    internal var foldDocument: MarkdownParsedDocument? = None
+    internal var foldPresentation: MdRichPresentation? = None
+    internal val caches = HashMap<MdDisplayKey, MdPreviewRowCache>()
+    internal var layoutWidth = -1.0
+    internal var maximumWidth = 0.0
+    internal var fontRevision = -1L
+    internal var accepted: MarkdownPreviewMeasurement? = None
+    internal var anchor: MdPreviewAnchor? = None
+    internal var alignment: MdScrollAlignment? = None
+    internal var editorMount: MdEditorMount? = None
+    internal var revealTarget: MarkdownPosition? = None
+    internal var drag: MarkdownPosition? = None
+    internal var pressed: MarkdownPreviewHit? = None
+    internal var moved = false
+    internal var openLink: (String) -> Unit = { _ -> Unit }
+    internal var openSource: (MarkdownRange) -> Unit = { _ -> Unit }
+    private var subscription = editor.document.observe { change -> sourceChanged(change) }
+    public val scroll = initialScroll ?: ScrollState()
+    internal val viewport = scope.scrollViewport(scroll)
+    public val area =
+        scope.createArea(focusable = true) {
+            context,
+            event -> mdPreviewEvent(this, context, event)
+        }
+    public val focus = scope.focusTarget(area, FocusOptions(visibility = FocusVisibility.Always))
+    init {
+        options.check()
+        area.scope.defaultAction = { context, event -> mdPreviewEvent(this, context, event) }
+        area.scope.enabled = options.enabled
+        observeImages()
+    }
+
+    public val isClosed: Boolean get() = closed
+    public val measurement: MarkdownPreviewMeasurement? get() {
+        checkOpen();
+        return accepted
+    }
+
+    internal fun checkOpen() {
+        if (closed || !scope.isMounted)
+            throw IllegalStateException(Some("Markdown preview is no longer mounted"))
+        editor.snapshot
+    }
+
+    private fun sourceChanged(change: MarkdownChange) {
+        if (change.kind == MarkdownChangeKind.Reset)
+            alignment = None
+        else
+            when (alignment) {
+                case Some(val value) -> alignment = Some(value.map(change))
+                case None -> Unit
+            }
+        when (anchor) {
+            case Some(val value) -> anchor =
+                Some(
+                    MdPreviewAnchor(
+                        change.map(value.source),
+                        value.key,
+                        value.cell,
+                        value.text,
+                        value.delta,
+                        value.request
+                    )
+                )
+            case None -> Unit
+        }
+        when (revealTarget) {
+            case Some(val value) -> revealTarget = Some(change.map(MarkdownAnchor(value)).position)
+            case None -> Unit
+        }
+        if (!closed && scope.isMounted)
+            scope.requestLayout()
+    }
+
+    public fun update(
+        controller: MarkdownParseController,
+        style: MarkdownPreviewStyle,
+        options: MarkdownPreviewOptions = MarkdownPreviewOptions(),
+        focus: FocusOptions = FocusOptions(visibility = FocusVisibility.Always),
+        fonts: FontCollection? = None,
+        onOpenLink: (String) -> Unit = { _ -> Unit },
+        onSource: (MarkdownRange) -> Unit = { _ -> Unit },
+        images: MarkdownImageController? = None,
+        documentUri: String = "",
+        searchResult: MarkdownSearchResult? = None,
+        folding: MarkdownFoldingController? = None
+    ) {
+        checkOpen()
+        controller.editor.checkEdit()
+        options.check()
+        when (folding) {
+            case Some(val value) -> if (value.parser !== controller)
+                throw IllegalArgumentException(
+                    Some("Markdown preview folding belongs to another parser")
+                )
+            case None -> Unit
+        }
+        val rebound = controller !== this.controller
+        val sameImages =
+            when ((imageController, images)) {
+                case(Some(val old), Some(val next)) -> old === next
+                case(None, None) -> true
+                else -> false
+            }
+        val sameFonts =
+            when ((suppliedFonts, fonts)) {
+                case(Some(val a), Some(val b)) -> a === b
+                case(None, None) -> true
+                else -> false
+            }
+        if (
+            rebound ||
+                style !==
+                this.style ||
+                options !=
+                this.options ||
+                !sameFonts ||
+                !sameImages ||
+                this.documentUri !=
+                documentUri
+        ) {
+            for (entry in caches)
+                entry.value.close()
+            caches.clear()
+            layoutWidth = -1.0
+        }
+        if (rebound) {
+            subscription.close()
+            this.controller = controller
+            subscription = editor.document.observe { change -> sourceChanged(change) }
+            document = None
+            anchor = None
+            alignment = None
+            revealTarget = None
+        }
+        this.style = style
+        if (!sameImages) {
+            imageLease?.close()
+            imageController = images
+            imageLease = images?.bind()
+            observeImages()
+        }
+        this.documentUri = documentUri
+        this.searchResult = searchResult
+        this.folding = folding
+        folding?.revealSelection()
+        this.options = options
+        this.focus.options = focus
+        suppliedFonts = fonts
+        openLink = onOpenLink
+        openSource = onSource
+        area.scope.enabled = options.enabled
+    }
+
+    private fun observeImages() {
+        when (imageLease) {
+            case Some(val lease) -> lease.onChanged =
+                Some {
+                    if (!closed && scope.isMounted)
+                        scope.requestLayout()
+                }
+            case None -> Unit
+        }
+    }
+
+    internal fun alignViewport(target: MdScrollAnchor) {
+        checkOpen()
+        val request = scroll.beginLayoutRequest()
+        alignment = Some(MdScrollAlignment(target, request))
+        anchor = None
+        revealTarget = None
+        scope.requestLayout()
+    }
+
+    internal fun visibleImages(frame: MarkdownPreviewMeasurement, lease: MarkdownImageLease?) {
+        val images = imageController ?: return
+        if (images.isClosed)
+            return
+        when ((lease, imageLease)) {
+            case(Some(val expected), Some(val current)) -> {
+                if (expected !== current)
+                    return
+            }
+            else -> return
+        }
+        val requests = ArrayList<MarkdownImageRequest>()
+        for (row in frame.rows)
+            for (entry in row.resource.images.entries)
+                requests.add(entry.request)
+        lease?.show(requests)
+    }
+
+    public fun measure(
+        context: MeasureContext,
+        constraints: Constraints
+    ): MarkdownPreviewMeasurement {
+        checkOpen()
+        return mdMeasurePreview(this, context, constraints)
+    }
+    public fun scene(context: SceneContext, measurement: MarkdownPreviewMeasurement) {
+        checkOpen()
+        mdScenePreview(this, context, measurement)
+    }
+    internal fun currentFrame(): MarkdownPreviewMeasurement? {
+        val frame = accepted ?: return None
+        val latest = presentation?.base ?: (controller.current ?: return None)
+        return when (frame.document) {
+            case Some(val value) -> if (
+                value ===
+                    latest &&
+                    frame.sourceRevision ==
+                    Some(editor.snapshot.revision) &&
+                    mdSamePresentation(frame.presentation, presentation) &&
+                    mdSameFolds(frame.folds, mdActiveFolds(folding))
+            )
+                Some(frame)
+            else
+                None
+            case None -> None
+        }
+    }
+    public fun hitTest(point: Point): MarkdownPreviewHit? {
+        checkOpen();
+        return currentFrame()?.hit(point) ?: None
+    }
+    public fun caret(position: MarkdownPosition, bias: MarkdownBias = MarkdownBias.After): Rect? {
+        checkOpen()
+        return currentFrame()?.caret(position, bias) ?: None
+    }
+    public fun reveal(position: MarkdownPosition) {
+        checkOpen()
+        editor.checkEdit()
+        editor.snapshot.read(MarkdownRange(position.byteOffset, position.byteOffset))
+        folding?.reveal(position)
+        revealTarget = Some(position)
+        scope.requestLayout()
+    }
+    public fun activate(hit: MarkdownPreviewHit) {
+        checkOpen()
+        editor.checkEdit()
+        val frame = currentFrame() ?: return
+        val model = frame.document!!
+        if (hit.document !== model || !mdSamePresentation(hit.presentation, frame.presentation))
+            return
+        when (hit.action) {
+            case Some(MdDisplayAction.Link(val destination)) -> {
+                when (model.previewNavigation.resolveLink(destination)) {
+                    case Some(val range) -> navigate(
+                        mdFrameOriginalRange(model, frame.presentation, range)
+                    )
+                    case None -> openLink(destination)
+                }
+            }
+            case Some(MdDisplayAction.Navigate(val range)) ->
+            navigate(mdFrameOriginalRange(model, frame.presentation, range))
+            case Some(MdDisplayAction.Source(val range)) -> openSource(
+                when (frame.presentation) {
+                    case Some(val local) -> {
+                        val index = local.rowForKey(hit.blockKey) ?: return
+                        local.cellRange(index, hit.cellIndex, range)
+                    }
+                    case None -> mdPreviewOriginalRange(model, range)
+                }
+            )
+            case None -> Unit
+        }
+    }
+    private fun navigate(range: MarkdownRange) {
+        val position = MarkdownPosition(range.start)
+        val mount = editorMount
+        when (mount?.props?.navigation ?: None) {
+            case Some(val navigation) -> navigation.goTo(position)
+            case None -> {
+                editor.setSelection(MarkdownSelection(position, position))
+                when (mount) {
+                    case Some(val owner) -> {
+                        owner.state.requestFocus(owner.state.activePane)
+                        mdRevealEditorPosition(owner.state, position)
+                    }
+                    case None -> {
+                        area.requestFocus()
+                        reveal(position)
+                    }
+                }
+            }
+        }
+    }
+    public fun execute(command: TextEditCommand): Boolean {
+        checkOpen()
+        editor.checkEdit()
+        if (!options.enabled || !area.isFocusActive || !area.scope.isInputAllowed)
+            return false
+        return mdPreviewCommand(this, command)
+    }
+
+    public override fun close() {
+        if (closed)
+            return
+        editor.storage.checkMutation()
+        closed = true
+        var failure: Throwable? = None
+        failure = mdCleanup(failure) { subscription.close() }
+        failure = mdCleanup(failure) { imageLease?.close() }
+        imageLease = None
+        failure = mdCleanup(failure) { focus.close() }
+        failure = mdCleanup(failure) { area.close() }
+        failure = mdCleanup(failure) { viewport.close() }
+        failure = mdCleanup(failure) { accepted?.close() }
+        accepted = None
+        for (entry in caches)
+            failure = mdCleanup(failure) { entry.value.close() }
+        caches.clear()
+        mdThrow(failure)
+    }
+}

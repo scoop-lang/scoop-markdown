@@ -1,0 +1,217 @@
+package scoop.ui.markdown
+
+import scoop.graphics.text.TextAffinity
+import scoop.markdown.*
+import scoop.window.*
+
+internal fun mdSourceCommand(host: MarkdownSourceHost, command: TextEditCommand): Boolean {
+    val state = host.current
+    when (command) {
+        case Move(val movement, val extend) -> {
+            val before = state.selection
+            val result =
+                if (
+                    !extend &&
+                        !before.collapsed &&
+                        (movement == TextMovement.Left || movement == TextMovement.Right)
+                )
+                    mdSourceCollapse(host, movement == TextMovement.Right)
+                else
+                    if (!extend && !before.collapsed && movement == TextMovement.Backward)
+                        MdSourceMove(
+                            MarkdownPosition(before.range.start),
+                            TextAffinity.Downstream,
+                            None
+                        )
+                    else
+                        if (!extend && !before.collapsed && movement == TextMovement.Forward)
+                            MdSourceMove(
+                                MarkdownPosition(before.range.end),
+                                TextAffinity.Upstream,
+                                None
+                            )
+                        else
+                            mdSourceMove(host, movement)
+            host.perform(
+                {
+                    host.folding?.reveal(result.position)
+                    state.setSelection(
+                        MarkdownSelection(
+                            if (extend)
+                                before.anchor
+                            else
+                                result.position,
+                            result.position,
+                            if (extend)
+                                before.anchorBias
+                            else
+                                MarkdownBias.After,
+                            MarkdownBias.After
+                        )
+                    )
+                }
+            )
+            host.cursorAffinity = result.affinity
+            host.preferredX = result.preferredX
+        }
+        case Copy -> {
+            val range = state.selection.range
+            if (!range.isEmpty)
+                mdSourceCopy(host)
+        }
+        case Cut -> {
+            if (host.options.readOnly)
+                return true
+            val range = state.selection.range
+            if (!range.isEmpty) {
+                mdSourceCopy(host)
+                host.perform({ state.replaceSelection("") })
+            }
+        }
+        case Paste -> return mdSourcePaste(host, false)
+        case Delete(val deletion) -> {
+            if (host.options.readOnly)
+                return true
+            val pair =
+                if (
+                    host.options.autoPairs &&
+                        !state.isComposing &&
+                        deletion ==
+                        TextDeletion.Backward
+                )
+                    host.assistance.deletion(state.selection, host.sourceRange)
+                else
+                    None
+            when (pair) {
+                case Some(val range) -> {
+                    host.perform({ state.replace(range, "") })
+                    return true
+                }
+                case None -> Unit
+            }
+            val range = mdSourceDelete(host, deletion)
+            val folding = host.folding
+            if (
+                folding?.exposeDeletion(range) ==
+                    Some(true) ||
+                    (
+                        (
+                            deletion == TextDeletion.Forward || deletion == TextDeletion.WordForward
+                        ) &&
+                            state.selection.cursor.byteOffset >=
+                            host.lineRange(state.snapshot.lineAt(state.selection.cursor)).end &&
+                            folding?.exposeFollowingHeader(state.selection.cursor, false) ==
+                            Some(true)
+                    )
+            ) {
+                host.scope.requestLayout()
+                return true
+            }
+            val kind =
+                when (deletion) {
+                    case Backward -> MarkdownEditKind.Backspace
+                    case Forward -> MarkdownEditKind.Delete
+                    else -> MarkdownEditKind.Separate
+                }
+            host.perform({ state.replace(range, "", kind) })
+        }
+        case SelectAll -> host.perform(
+            {
+                state.setSelection(
+                    MarkdownSelection(
+                        MarkdownPosition(host.sourceRange.start),
+                        MarkdownPosition(host.sourceRange.end)
+                    )
+                )
+            }
+        )
+        case Undo -> if (!host.options.readOnly)
+            host.perform({ state.undo() })
+        case Redo -> if (!host.options.readOnly)
+            host.perform({ state.redo() })
+        case InsertNewline -> if (!host.options.readOnly) {
+            val insertion =
+                mdSourceNewline(
+                    state.snapshot,
+                    state.selection,
+                    host.sourceRange,
+                    host.options,
+                    if (state.isComposing)
+                        None
+                    else
+                        host.syntax
+                )
+            host.perform({ state.apply(insertion.change, insertion.caret) })
+        }
+        case InsertTab -> if (!host.options.readOnly) {
+            if (
+                state.snapshot.lineAt(state.selection.anchor) !=
+                    state.snapshot.lineAt(state.selection.cursor)
+            )
+                host.perform(
+                    { mdIndentSource(state, host.options.tabSize, false, host.sourceRange) }
+                )
+            else
+                host.perform({ state.replaceSelection("\t") })
+        }
+        case InsertBacktab -> if (!host.options.readOnly)
+            host.perform({ mdIndentSource(state, host.options.tabSize, true, host.sourceRange) })
+        case Cancel -> {
+            if (!state.isComposing) {
+                val exit = host.exitSource ?: return false
+                exit()
+            } else
+                host.perform({ state.cancelComposition() })
+        }
+    }
+    when (command) {
+        case Move(_, _) -> Unit;
+        else -> {
+            host.preferredX = None;
+            host.cursorAffinity = TextAffinity.Downstream
+        }
+    }
+    return true
+}
+
+internal fun mdIndentSource(
+    state: MarkdownEditorState,
+    tabSize: Int,
+    remove: Boolean,
+    limit: MarkdownRange
+) {
+    val snapshot = state.snapshot
+    val selection = state.selection.range
+    val start = snapshot.lineAt(MarkdownPosition(selection.start))
+    var end = snapshot.lineAt(MarkdownPosition(selection.end))
+    if (
+        !selection.isEmpty &&
+            end >
+            start &&
+            snapshot.positionOfLine(end).byteOffset ==
+            selection.end
+    )
+        end -= 1L
+    val edits = ArrayList<MarkdownReplacement>()
+    val extent = MdSourceExtent(snapshot, limit)
+    for (line in start .. end) {
+        val range = extent.line(line)
+        if (remove) {
+            val text = snapshot.read(range)
+            var bytes = 0L
+            for (character in text) {
+                if (bytes == 0L && character == '\t') {
+                    bytes = 1L;
+                    break
+                }
+                if (character != ' ' || bytes == tabSize.toLong())
+                    break
+                bytes += 1L
+            }
+            if (bytes > 0L)
+                edits.add(MarkdownReplacement(MarkdownRange(range.start, range.start + bytes), ""))
+        } else
+            edits.add(MarkdownReplacement(MarkdownRange(range.start, range.start), "\t"))
+    }
+    state.apply(MarkdownEdit(snapshot.revision, edits))
+}

@@ -1,0 +1,317 @@
+# Scoop Markdown 文档库规范
+
+日期：2026-11-14。规范先于实施；当前交付与验证范围见[实施记录](../markdown/PROGRESS.md)，完整目标见[文档库设计](../markdown/DESIGN.md)和[编辑器设计](../ui/markdown/DESIGN.md)。
+
+## 1. 定位
+
+`scoop:scoop.markdown` 是纯 Scoop library Cone，package 为 `scoop.markdown`。它依赖实际使用的 core／std，提供源文档、快照、解析、结构化处理与生成，不依赖图形、窗口、UI 或 compiler crate。所有库行为由 `scoop test --release` 验证，使用本机已准备的工具链与系统库。
+
+源文本是唯一可写文档。解析结果、预览、扩展展开和图像均为派生数据。默认保存保留原始 UTF-8 字节、换行、空白与未知语法；生成新内容和显式格式化才选择新的 Markdown 写法。
+
+## 2. 源文本与位置
+
+`MarkdownDocument.fromText(source)` 建立独立文档，内容 revision 初始为 0。`documentId: MarkdownDocumentId` 是该文档的普通类型化身份；快照、修改和解析结果带同一身份。文档由调用方串行修改；不可变快照可以经正常同步跨线程发布。
+
+`MarkdownPosition(byteOffset)`、`MarkdownRange(start, end)` 使用 Long UTF-8 字节位置。范围为半开区间，必须满足 `0 <= start <= end <= byteLength` 且端点位于 Unicode 标量边界。接口在实际消费范围时检查，不把构造纯值变成读取文档的操作。
+
+`MarkdownAnchor(position, bias)` 的 bias 为 Before 或 After。在锚点位置插入时 Before 留在新内容之前，After 移到之后；替换内部的位置分别收敛到替换开始或结束。选择方向属于上层状态，range 本身不保存方向。
+
+## 3. 不可变快照
+
+`document.snapshot(): MarkdownSnapshot` 返回当前不可变快照，不复制全文，不隐式解析 Markdown。快照提供 documentId、revision、byteLength、lineCount、`read(range)`、`chunks(range)`、`writeTo(writer)`、`toMarkdown()`、`lineAt(position)`、`positionOfLine(line)` 与 `lineRange(line, includeTerminator)`。
+
+`read` 和 `toMarkdown` 显式物化请求的文本。chunks 顺序迭代范围内的字符串片段，端点均为合法 UTF-8 边界；writeTo 按片段调用 TextWriter，不先拼成全文。旧快照在后续修改、reset 和订阅取消后仍有效。
+
+行号从 0 开始。LF、CRLF 和单独 CR 都是换行；CRLF 只算一个，位于 CR 与 LF 之间的位置仍属于前一行。空文档有一行，末尾换行产生一个末尾空行。positionOfLine 返回行首字节位置；lineRange 缺省不包含换行，有效行必须返回准确范围。
+
+文本存储使用持久化平衡树和有界 UTF-8 叶片。正常修改只更新涉及的树路径；节点缓存长度与换行汇总，不为一次键入复制完整文档或从头建立行索引。CRLF 横跨叶片时与同叶片语义一致。
+
+## 4. 修改事务
+
+`MarkdownReplacement(range, text)` 表示一次源码替换；text 是已经合法的 String。`MarkdownEdit(baseRevision, replacements)` 复制操作列表，所有范围都引用该基线。列表按源码顺序排列且不重叠；同一位置的空范围插入按列表顺序出现。
+
+`document.apply(edit): MarkdownChange` 在发布前检查版本、全部范围及结果长度，再构造新文本并一次发布。无效基线抛 IllegalStateException，非法范围／边界／顺序抛 IllegalArgumentException，实际长度溢出抛 ArithmeticException；这些失败不改变文档或通知订阅者。
+
+`replace(range, text)` 使用当前 revision 创建单次事务。对相同范围替换相同文字的操作被省略；没有有效修改时返回未变化的 change，不推进 revision、不通知。真正发布一次修改只推进一次 revision。
+
+`snapshot.prepare(edit)` 按相同规则准备 MarkdownChange，不发布文档；调用方可先检查 after 的结构或计算结果选区，再用 `change.applyTo(document)` 发布这个确切快照。发布要求文档当前 snapshot 为 change.before，不重复准备已经验证的替换。`syntax.prepareTransform { ... }` 同样先将一批结构操作准备为普通 MarkdownChange，供块命令在发布前定位结果。
+
+`MarkdownChange` 保存 before／after 快照、实际 replacements、inverseReplacements 和 kind（Edit／Reset），提供 `changed`、`map(anchor)` 及 `mapBack(anchor)`。mapBack 使用反向差量把 after 锚点映射到 before，插入／删除边界沿同一 Before／After 规则处理；删除内部信息不会因此恢复。inverseReplacements 引用 after 的坐标，可在当前 after revision 上组成反向事务；不重复执行过滤或结构命令。仅保存实际变化所需的数据和共享快照，不为键入复制全文历史。
+
+`reset(source)` 表示外部整体重载，保持文档身份、推进 revision 并发布 Reset，即使字节相同也通知重载。上层可据此清空旧历史；普通 replace 不暗含这种行为。
+
+## 5. 通知
+
+`observe(callback): MarkdownSubscription` 返回 Closeable 订阅。一次成功发布对当时仍有效的订阅通知一次，无初始补发。取消幂等，释放 callback；通知中取消尚未调用的订阅后，该订阅不再被调用；通知中新增的订阅从下一次修改开始接收。
+
+修改回调不能重入 apply／replace／reset；该调用在改变状态前抛 IllegalStateException。回调异常不会回滚已发布的文档，其他有效订阅仍收到相同 change，最后传播首个异常。上层应区分事务准备失败与已经发布后的通知失败。
+
+## 6. 解析与源码映射
+
+`parseMarkdown(snapshot, profile)` 显式解析一个不可变快照，返回 `ParsedMarkdown`；`MarkdownDocument.parse(profile)` 在内容与配置不变时复用结果。默认 `MarkdownProfile.Gfm` 启用表格、任务列表、删除线和扩展自动链接；`MarkdownProfile.CommonMark` 遵守 CommonMark 0.31.2。配置是普通不可变值，不涉及 UI 或外部进程。源码修改不等待解析。
+
+解析先识别块容器，再收集引用定义，最后解析行内内容。后置定义和 Unicode 完整大小写折叠参与引用查找；重复定义取首次出现者。代码围栏、HTML、实体、转义、强调分隔符、列表缩进和懒续行遵循对应方言。未完成输入按 Markdown 的普通恢复规则保留，不作为文档读写错误。
+
+GFM 的裸网址在行内词法阶段识别，其正文中的实体或反斜杠不再次解码；邮箱自动链接在文字解码后识别。显式链接的 label 不再生成嵌套链接。实体解码出的空格不作为源码行尾空白删除，也不计入两个空格触发的 hard break。
+
+`MarkdownNode` 保存类型化身份、完整源码范围、不可变子节点、语义内容和语法标记范围。`MarkdownContent` 的带数据枚举承载各类节点的必要字段：标题级别、列表起始数与紧凑性、代码 info 与正文、链接目标及引用形式等，不能让调用方通过空字段猜测节点是否合法。引用定义作为可查询节点保留，不生成可见段落。解析结果绑定 documentId／revision；节点查询只接受该结果中的身份，不以名称或数组位置冒充身份。
+
+`MarkdownText` 保存解码后的 UTF-8 文本及分段源码映射。每段分别标识直接文本与语义转换；实体、反斜杠转义、CRLF／CR→LF、NUL→U+FFFD、部分 tab 展开等都明确映射至原始范围。只在派生语义中规范化这些字符，snapshot 及保存仍逐字节保留原文。渲染位置与源码位置在转换段内部按 Before／After 偏向落到原始／派生段边界；直接文本保持字节内的精确位置。列表／引用前缀、强调符号和链接目标不混入显示正文。代码 span 的换行、首尾空格及表格中的转义竖线也必须保留映射。
+
+树遍历及块构建避免依赖文档嵌套深度的调用栈。解析可以在调用线程上显式物化一次输入；不得隐式变成源码键入的同步步骤。非 UI 的调用方可直接遍历节点、查询位置或读取引用定义，继续通过 source transaction 写回。
+
+CommonMark 官方样例通过 Scoop 测试中的 HTML 投影核对语义；投影只是测试 oracle 的适配，不成为本库必需的公共 HTML API。额外测试覆盖源码映射、查询、无损保存、GFM 和真实仓库文档。
+
+### 6.1 局部结构区域
+
+`MarkdownSyntax` 共享不可变树的 snapshot、profile、root、diagnostics、节点查询、父节点和遍历；`ParsedMarkdown` 表示完整文档，`ParsedMarkdownRegion` 明确表示一个局部区域，二者不混淆完整性。所有范围仍使用原文档的全局 UTF-8 坐标。行内内容与结构事务接受同一语法基类，因此局部树上的修改仍发布到原文档，并使用同一逆向事务。
+
+`parsed.region(range)` 从完整树选取覆盖选区的完整顶层块及相邻块，连同块间空行建立 `MarkdownRegion`；不读取或复制正文，不建立另一份文档或历史。区域边界在物理行首或文件末尾，嵌套列表／引用整体保留容器语义。区域保存区外引用定义和脚注标签的必要上下文；同名定义仍按原文顺序采用第一次出现者。区内定义由本次解析收集，删除后可使用区外后续定义。
+
+`region.after(change)` 要求 change.before 为该区域的当前快照，且所有替换位于区域内；它只推进快照、范围与区外定义映射，不解析、不复制正文。旧区域继续有效；其他文档、过期分支、Reset 或区外修改拒绝沿用，调用方在完整解析到达后重新取得区域。`region.parse()` 只读取区域源码，返回匹配当前快照的 `ParsedMarkdownRegion`；未改变时由调用方复用既有解析。此接口用于已知保持区外块边界的结构编辑，不宣称任意源码修改具有局部失效范围；完整后台解析仍负责跨区域的语法变化及文档级脚注编号。
+
+`MarkdownExtension.parse` 在发起解析的线程执行，只匹配给定输入，不做资源 I/O 或修改文档。调用方在不同线程复用 profile 时，扩展实例应使用不可变配置，或自行同步必要的内部状态；文档库不保证扩展只在某个专用线程执行。
+
+局部解析不将位于文档中间的区域开头当作 front matter 起点。扩展处理器、行内映射、列表前缀、CRLF、代码围栏和定义目标继续使用全局源码范围。区域节点身份只属于该区域解析，不能用于另一次区域或全文解析的结构操作。
+
+## 7. Markdown 生成
+
+`markdownDocument(options, configure)` 使用 `MarkdownDocumentBuilder.() -> Unit` 收集内容，生成新的 `MarkdownDocument`；`markdownText(options, configure)` 返回同一生成行为的 String。生成不修改已有文档，也不隐式解析。`MarkdownWriteOptions` 选择 LF／CRLF／CR、是否保留最终换行、无序列表符号与列表缩进；选项必须能形成合法的 CommonMark 写法。
+
+block builder 提供 paragraph、heading、blockQuote、bulletList、orderedList、fencedCode、thematicBreak、table 和 rawMarkdown。列表通过 item 的 block builder 收集内容；表格通过 header／row 的 cell inline builder 收集内容，列数与对齐数据在输出前确定。普通块间生成必要空行，容器给每条实际行添加相应前缀；代码中的空行和内容不变成容器外的段落。列表紧凑性由调用选择与条目内必要的块分隔共同决定。
+
+inline builder 提供 text、emphasis、strong、strikethrough、code、link、image、softBreak、hardBreak 与 rawMarkdown。`text` 按字面文字转义，避免意外形成标题、列表、强调或链接语法；显式 rawMarkdown 加入调用方提供的源码，其组合效果由调用方表达。GFM 邮箱自动链接作用于解码后的文字，邮箱是否成为可点击链接由解析配置的 autolinks 决定；生成器不为屏蔽它而插入 HTML 或隐藏字符。文字中的换行可用字符实体保留在同一文字片段，真正的 Markdown 换行使用 softBreak／hardBreak；NUL 的显示语义沿 CommonMark 归一为 U+FFFD。
+
+强调及删除线需要处理内容边界的空白、标点和相邻分隔符；必要时用实体编码相邻文字边界，保持可见文字与格式，不添加隐藏字符改变正文。空的格式片段不生成孤立定界符。code 根据正文的最长反引号串选择定界符，并处理首尾空格；行内代码的换行按 CommonMark 规范化为空格。fencedCode 选择不会与正文冲突的围栏，info 必须是单行，非空正文需要在关闭围栏之前结束一行。链接及图片分别处理显示文字、目标和 title 的转义，不能把一套文字转义直接用于所有位置。
+
+生成器拒绝没有合法对应写法的结构参数：标题级别超出 1–6、嵌套链接、段首／段尾／相邻的显式行内换行、标题或表格内的显式换行、表格列数不匹配，以及 GFM 代码单元格中竖线前奇数个原样反斜杠。最后一种组合无法由 GFM 的反引号与表格转义共同保留，调用方可以显式提供 raw HTML 单元格。空文字和空格式不产生节点；连续同类格式可以合并，重复嵌套的同类格式按同一显示样式生成。生成配置只影响新源码，包括 rawMarkdown 中的换行；已有 snapshot 的字节不受影响。
+
+生成的新文档与已有 snapshot 的 PreserveSource 输出是两条明确的调用路径。默认保存仍调用源文档的 writeTo／toMarkdown，不能把生成器变成保存时的全篇重排。显式格式化和结构化编辑在后续章节给出独立合同。
+
+### 7.1 HTML 导入
+
+`importMarkdownHtml(html, options)` 显式把 HTML 字符串转换成新的 Markdown，不读取资源、不执行脚本、不修改已有文档，也不要求 UI。`MarkdownHtmlImportOptions` 包含 profile（默认 Gfm）、write（默认不附加最终换行）和可选 baseUri。结果 `MarkdownHtmlImportResult` 提供 markdown、sourceRange 和 diagnostics；范围均是原输入 HTML 的 UTF-8 字节。成对的实际 `<!--StartFragment-->`／`<!--EndFragment-->` 注释限定导入片段，否则导入完整输入；标签属性或 script／style 正文里的同名字串不是片段标记。
+
+转换保留段落、H1–H6、引用、有序／无序列表、粗体、斜体、链接与图片、行内代码、代码围栏、分隔线和普通矩形表格。删除线、任务框和表格遵守目标 profile；不启用的扩展及无法由 Markdown 表达的结构保留为原始 HTML，并报告所在范围。列表保留合法起始序号和嵌套，前置 checkbox 转为任务状态；倒序、不连续显式序号、合并单元格和嵌套表格保留 HTML。无表头的表格增加空表头，不把第一行正文当作标题。代码语言读取 code 的 language-*／lang-* class，代码内容及定界符沿已有生成器处理。
+
+普通文字按 HTML 规则折叠 ASCII 空白，保留 NBSP、Unicode、实体和转义后的字面含义；pre 保留正文换行与空格，忽略紧接开始标签的首个换行。命名字符引用复用 WHATWG 实体表，支持 HTML 的历史无分号形式及属性上下文限制，数值引用使用 HTML 的无效标量和 C1 映射规则。br 在可表示的位置转为硬换行；标题、单元格、段首／段尾及连续换行等不能直接用 Markdown 硬换行表达的位置保留 br 标签。
+
+html／body 和普通布局容器只提供内容分组；head、script、style、template、元数据和注释不成为正文。支持内联 font-weight、font-style 与 line-through 的常用文本语义；导入不还原 CSS 字体、颜色、尺寸、定位、class 或页面布局。已转换标签的语义属性用于 Markdown，其余属性不作为新文档的隐藏状态保留；未知标签及不支持的内容保留原始子树与属性，不能悄悄改成普通文字。原始 Markdown 的 HTML 无损保存仍沿既有快照合同，不经此转换。
+
+解析支持大小写不敏感的标签与属性、带引号／无引号属性、空元素及 p、li、表格行／单元格等常见可省略结束标签。它是本节转换范围的片段解析器，不提供浏览器 DOM、样式或完整 HTML5 错位格式恢复；其他不完整／错位输入保留可用内容并报告恢复位置。调用方提供 baseUri 时，链接和图片相对引用使用 scoop.url 解析，不读 HTML 中的 base 标签；不能解析的目标保留原值并报告，未提供基址时保留解码目标。baseUri 本身无效时沿 scoop.url 抛 UrlParseException；非法写入选项沿生成器抛 IllegalArgumentException。写入选项只作用于新 Markdown。
+
+富文本插入可把结果 markdown 交给 §8.6 的 replaceMarkdown，沿同一个准备、发布和精确撤销路径处理。导入只扫描给定片段，不为了粘贴解析目标文档的全文。
+
+## 8. 结构事务
+
+`document.transform(parsed) { ... }` 在当前不可变源快照对应的解析结果上准备结构修改，并通过 `MarkdownEdit` 一次发布。过期、其他文档或尚未发布分支的结果抛 IllegalStateException；相同 revision 数字不替代实际快照匹配。准备期间不修改文档；按原始坐标稳定排序后检查操作不重叠，任何非法参数或冲突都使本次准备失败。一个事务内的方法都基于同一份原始解析；不能用第一次操作尚未发布的节点作为后续操作的输入。回调返回前文档若被其他调用修改，最终 apply 仍拒绝旧基线。
+
+`MarkdownTransformBuilder` 提供 `replaceSource`、`replaceText`、`setInlineContent`、`setHeading`、`setParagraph`、`wrapInline`、`unwrapInline`、`setLinkTarget`、`setReferenceDefinition`、`setTask`，以及单元格、表格行列和矩形修改（§8.2）。节点参数使用该解析结果的 MarkdownNodeId，错误节点种类或索引抛 IllegalArgumentException。不同节点的互不重叠修改可以组合，旧快照与反向事务遵守既有合同。带结果光标的拆分／合并使用 §8.4 的准备接口。
+
+Paragraph、Heading 和 TableCell 的内容数据同时带有 `MarkdownText` 类型的行内解析输入：保留 Markdown 标记、实体和普通转义，去掉容器前缀、标题标记和任务框前缀；表格竖线先按 GFM 表格词法去转义。去前缀、换行规范化和表格转义均保留原始映射。这与叶 Text 的已解码显示文字明确区分。`ParsedMarkdown.parent(id)` 提供所属树内的父节点，根返回 None，不重新搜索整树。
+
+`replaceText` 替换 Text 或 CodeSpan 的显示内容，按所在表格与行内语法选择转义。`setInlineContent` 用 inline builder 替换一个段落、标题或表格单元格的内容，保持外围标记和容器；在该内容之外的源码不重写。标题与表格的内容仍是单行。`setHeading` 对已有 ATX 标题只改开头级别标记；Setext 的一／二级保留原风格，更高级或普通段落转成 ATX，多行正文合并为一行。`setParagraph` 去掉标题标记，并保护会被误识别为块标记的开头普通文字。wrap／unwrap 作用于完整行内节点；选区跨节点的格式操作在后续编辑器合同中补充。
+
+修改链接使用点的 `setLinkTarget` 保留 label 的源码并生成独立 inline target；共享引用定义不变。`setReferenceDefinition` 明确修改定义及其所有引用效果。`setTask` 只修改或增删任务框，添加任务框要求条目的第一个块是段落或空条目。源码显示的其他标记不因此统一格式化。
+
+任务条目的首段须保持段落，转为标题前先移除任务框；无法在 Markdown 中同时表达任务首段与独立标题的参数组合直接报错。空标题的行内内容插入点位于开头标记之后，存在关闭标记时保留必要的间隔。
+
+表格以第 0 行为 header。修改已有单元格只替换它的内容；为不齐的行补出缺失单元格时只追加必要分隔符。新 body row 的列数须匹配 header；删除不作用于 header。行修改继承所在引用／列表的续行前缀与本地换行，不把一个引用内的表格行插到引用外。整列与矩形修改见 §8.2，列表修改见 §8.3；显式格式化继续按设计补充。
+
+### 8.1 行内显示内容的编辑
+
+`parsed.inlineContent(id)` 为一个 Paragraph、Heading 或 TableCell 提供 `MarkdownInlineContent`。`text` 是带源码映射的显示文字：软换行是空格，硬换行是换行，图片、扩展、原始 HTML 与脚注引用是 UTF-8 三字节的 U+FFFC 原子对象。格式和链接定界符不出现在显示文字中。它属于一份不可变源快照并保留局部行内结构，不拥有另一份可保存文档。nodes 提供当前局部树的顶层行内节点，供无 UI 处理与显示投影读取格式、链接及对象；它们使用 snapshot 的源码坐标，节点身份不属于其他完整 ParsedMarkdown，不能交给另一棵解析树的结构命令。
+
+零字节文档的 root.id 也可传给 inlineContent，得到源码位置 0 的空行内区域；只准备区域不增加段落、不修改原文或完整解析树。首次输入按普通段落文字转义，后续操作、取消和逆向事务沿同一套局部编辑规则进行。非空文档的 Document 根不能当作行内区域。
+
+空列表条目的 id 也可取得插入区域，保留列表／任务前缀并在必要时补分隔空格。`syntax.inlineContentAt(position, bias)` 查找当前位置所属的行内块；位于普通空白行（包括引用／列表中只含容器前缀的行）时返回该位置的空区域，仍不向解析树添加节点。代码、扩展及不可作为普通文字输入的容器位置返回 None。调用方须使用完整解析或明确的区域解析提供结构上下文。
+
+`replaceText(range, text, bias)` 的 range 使用这份显示文字的 UTF-8 坐标；可跨普通文字、行内格式和链接，但不跨所属段落／标题／单元格。插入继承所选边界处的格式与链接；Before 选择左侧，After 选择右侧，边缘使用存在的一侧。替换非空选区继承被替换的第一个内容单元。对象只能按完整标量处理，原始 HTML、扩展的内部修改继续使用源码事务。代码 span 的新内容按既有生成规则规范化换行与围栏；普通文字按字面值写入，不把输入中的 Markdown 标记直接执行为格式。
+
+`setStyle(range, style, enabled)` 对非空显示范围设置／移除粗体、强调或删除线，保留其他样式与链接。删除或格式操作跨越行内结构时，重建该行内块内需要的结构；块外原文、引用定义、标题标记、任务标记、列表／引用前缀及换行风格保持。单个文字叶片或代码 span 内的普通修改走局部替换，保留外围定界符；若边缘物理字符的空白／标点类别变化会影响定界匹配，同样沿结构重建路径处理。隐式依赖 label 的链接变更后使用保留目标与标题的显式链接。显式结构修改可规范化受影响行内块的格式写法，不成为普通保存或模式切换时的全文格式化。
+
+`styleState(range, style, bias)` 查询相同显示坐标内的格式，返回 MarkdownStyleState 的 Off、On、Mixed 或 Unavailable。非空选择忽略纯空白和行内换行；没有可格式化内容时为 Unavailable。折叠选择使用 bias 指定的一侧，空行内内容为 Off，查询不插入空定界符。行内对象保留其外围格式；代码块、扩展块及跨块分隔符不参与统计。公开 profile 提供该内容采用的解析配置。
+
+`replaceText` 和 `setStyle` 都只准备 `MarkdownInlineEdit`，包含文档身份、原始 revision、普通 MarkdownEdit、编辑后源码选区及 `after: MarkdownInlineContent`。change 是包含正反差量的完整准备结果，尚未因此发布；after.snapshot 是同一 change.after 不可变源快照，after.text 是局部显示映射；它可继续准备后续输入，文档尚未因此发布修改。applyTo 要求文档仍处于准备使用的源快照，直接发布同一事务准备结果；不重复读取或应用已准备的修改。源码差量取实际变化的公共前后缀之外部分，保持标量边界。更新的映射通过当前块的行内解析生成，复用原解析提供的链接／脚注上下文，不为一次行内操作重新解析整篇文档。参数错误或不可表达的代码单元格沿既有参数错误处理，准备失败不发布。
+
+`content.edit { ... }` 按顺序准备一个行内编辑批次，builder 的 content 始终指向本批当前的局部内容。replaceText／setStyle 消费当前显示坐标，select 设置最终显示选区；整批只有一个对原文档的源码事务和一次内容 revision。restore 可以恢复从同一行内区域保留的内容快照，供组合取消恢复确切源码；其他文档或其他区域的内容不能充当该恢复基线。中间快照共享原文档未变化的源树，不建立另一份文档或历史，不向观察者发布。
+
+MarkdownInlineContent.sourceRange 是局部操作会涉及的源范围，包含必要的块标记与换行；表格使用所属行以涵盖缺失单元格的补齐。该范围随准备结果更新。后台全文解析可以随后收敛；连续行内输入不依赖它按键逐次完成。外部内容修改后，旧准备结果按既有快照规则失效，由调用方使用新解析重新选择编辑区域。
+
+### 8.2 表格列与矩形修改
+
+insertTableColumn(id, index, alignment) 在 0 到现有列数之间插入一列，末尾 inline builder 配置新 header，默认空；已有 body row 的新单元格为空。removeTableColumn 删除指定列及对应分隔行标记，至少保留一列；删除整个表格使用明确的源码／节点替换。setTableColumnAlignment 只替换目标分隔单元格的冒号，保留原有连字符数量和周围空白。
+
+setTableCells(id, row, column, values) 把非空、矩形的普通文字写入指定位置；起点可以是已有单元格，也可以紧接最后一行／列。矩形超出当前范围时追加必要的列与 body row，新列默认无对齐，新 header 与未覆盖位置为空。文字按现有单元格生成规则转义，Tab／换行可编码为实体，不能把文字内容当作 Markdown 执行。非矩形、负索引、起点跨过末尾、错误节点种类或重叠事务均失败且不发布。
+
+pasteTableTsv 使用相同矩形写入路径。Tab 分列，CR／LF／CRLF 分行；首字符为双引号的字段可包含 Tab 和换行，两个双引号表示一个字面双引号，关闭引号后只能是分隔符或结尾。尾部的一次行分隔不额外增加空行；短行补空单元格，空输入表示一个空单元格。不完整引号或关闭后的非法文字拒绝整次操作。
+
+列和矩形操作保留未编辑单元格的原始内容、引用／列表前缀和既有换行；涉及的行可以补齐两侧竖线，避免单列退化成标题或新内容成为块标记。GFM 原来忽略的多余 body 单元格保留在可见列之后，不因扩列变成可见正文。所有行与分隔行修改合并为一个普通源码事务；逆向事务恢复原始字节。
+
+### 8.3 列表层级与标记修改
+
+indentListItem(id) 将条目移为前一个兄弟条目的子列表项，首个条目不能缩进。保留条目自己的标记、任务状态与子内容；有序列表的起始编号不能直接打断段落时补出必要空行。outdentListItem(id) 在列表直接属于另一个条目时将当前条目提升为父条目的后一个兄弟，并采用父层标记与缩进宽度；原来在它后面的兄弟及父条目的后续内容留在其下。父条目仍保留，包括原本只含当前嵌套列表的空父条目。引用等其他容器不会被隐式跨越；当前列表不直接属于条目时，outdentListItem 使用下述解除列表规则。
+
+unwrapListItem(id) 移除当前条目的列表标记及任务框，把正文留在原列表所在的容器内。必要空行将正文与前后剩余列表分开，避免正文成为懒续行，或非 1 编号的后续有序列表被当成文字。空项解除后保留一个可输入的空行。其他条目的标记、正文和编号保持原样。
+
+setBulletList(id, marker) 将指定 ListBlock 转为无序列表，marker 默认 `-`，允许 `-`、`+`、`*`。setOrderedList(id, start, delimiter) 转为有序列表，并显式按顺序编号；默认从 1 开始、分隔符为 `.`，也允许 `)`，全部编号须落在 CommonMark 的 0～999999999 范围。任务状态、列表正文与紧凑／宽松所需的空行不变；编号宽度变化同步调整所属续行。调用这些显式转换才修改其他条目的标记，普通输入和层级移动不隐式重编号。
+
+这些命令使用解析时保留的实际容器前缀及 Tab 消费位置，修改源码前缀和必要分隔；正文、围栏与扩展内容不经整体重新生成。受影响的缩进可规范化为空格，跨越容器边界的部分 Tab 保留其剩余显示列，懒续行补全对应容器。未涉及的源范围保持原样；普通源码锚点按差量移动，反向事务恢复原始字节。错误节点、非法参数、无前驱的缩进或同批重叠修改均不发布。
+
+### 8.4 块拆分与合并
+
+`ParsedMarkdown.splitBlock(id, range)` 按段落或标题的显示 UTF-8 字节范围删除选中文字，再拆成两个块；范围须为标量边界，原子对象不可从内部拆开。左侧保留原块种类和标题级别／风格，右侧成为段落。空 Setext 左侧改为同级 ATX 标题，以保留可表达的空标题。空文档根也接受零范围。源码范围、换行和容器依据当前解析准备，不修改原文档。
+
+直接属于 ListItem 的段落／标题在拆分时延续为下一个列表项；保留项目符号或有序列表分隔符，有序标记在九位数范围内加一，达到上限时复用原标记。新任务项未勾选，原条目的任务状态保留。跟在拆分位置之后的块归到新条目；编号宽度变化时同步其续行前缀。新行继承列表松紧和外层引用／列表容器。空 ListItem 或其唯一空段落的零范围拆分执行一次 outdentListItem，顶层因此解除列表，嵌套列表只退出一层。
+
+`ParsedMarkdown.joinBlocks(first, second)` 合并同一父容器中相邻的两个段落／标题，保留第一个块的种类与外围标记，光标放在原两段显示文字的连接处；不自动插入空格。ATX 标题的结果将软／硬换行转换为空格，多行原始对象不能合入 ATX 标题。不能越过其他块、引用定义、列表项边界或容器；表格、代码和扩展块不作为这两个操作的行内目标。
+
+两种操作返回 `MarkdownBlockEdit`，包含一次已准备的 change、结果源码 selection、普通 edit 和 applyTo(document)。准备只处理受影响块及必要的列表续行，不物化其他正文或重新解析整篇文档；样式和链接按显示内容在分界两侧正确闭合，原子对象保留源码。受影响块允许规范化行内拼写，块外源码保持原样；反向事务恢复精确原字节。失败、外部文档或过期快照不发布，applyTo 使用与 MarkdownInlineEdit 相同的当前快照身份检查。
+
+`MarkdownTransformBuilder.wrapBlockQuote(first, last)` 给同一父容器中连续的完整块增加一级引用，last 默认 first；`unwrapBlockQuote(id)` 移除指定引用的一层。`wrapBulletList`、`wrapOrderedList(start)` 和 `wrapTaskList` 将相同的连续块各自包装为一个条目；任务列表要求各块为段落。包装使用原始块源码，只改变所需的前缀、缩进和分隔空行，保留行内写法、代码围栏与扩展正文。外层列表、引用和脚注容器保留；跨容器选区、表格内部行／单元格及任务首段不能直接增加不相容的块容器。移除引用同时去掉该层引用消耗的前导缩进，保留子块边界与外层容器；跨越容器边界的 Tab 按各层实际消费的列转换为必要空格，不把原段落误变成缩进代码。
+
+引用直接跟在列表条目标记后的同一行时，解除引用将子块放到列表续行，并按新的条目标记宽度调整本条目的续行前缀；避免首块缩进被重新解释成列表标记的间距。其他条目不改变，当前条目的代码正文和后续块仍保留。
+
+`setFencedCode(first, last, info)` 将连续的段落／标题转换为一个围栏代码块，正文取各块去除外围标记后的原始 Markdown，以空行分隔；反引号、实体和行内标记作为代码文字保留。info 是单行字段，围栏沿生成器的冲突规则产生。已有代码块修改语言使用 setCodeInfo。块转换仍是普通源事务，失败不发布，逆向恢复原始字节。新块与未选相邻块之间保留必要分隔，不把邻接段落吸收进新增列表或引用。
+
+### 8.5 多块显示内容的编辑
+
+§8.4 的相邻块合并与本节的跨块合并都须保留未选后续块的边界：例如将普通段落与其后的 ATX 标题合并时，原来紧接标题的普通段落仍为独立块，必要的分隔空行包含在同一准备事务中。
+
+`syntax.textContent(range)` 在完整解析或局部区域解析上取得 `MarkdownTextContent`；range 使用源码 UTF-8 坐标。选区属于单个行内块时复用 §8.1 的快速路径；否则借用覆盖选区的 MarkdownRegion，把范围内完整块的可编辑文字按源码顺序连接。相邻块用换行、同一表格行的相邻单元格用 Tab 分隔，分隔符带有对应源码间隙的映射。代码块、HTML、扩展、引用定义及分隔线在这种跨块输入上下文中作为完整 U+FFFC 对象；它们的内部仍由源码编辑。脚注按源码位置排列，不采用预览的末尾编号顺序。只建立输入上下文不改文档，也不把扩展展开的生成文字当作主文档可编辑源码。
+
+MarkdownTextContent 提供 snapshot、sourceRange、text，以及可用时的 inlineContent 和 region；行内内容也可通过 `editableText()` 包装。replaceText 的范围仍为显示 UTF-8 坐标，插入普通文字并沿 §8.1 继承起点样式。跨段替换保留两端未选中的内容，同容器的段落／标题合并并保持起始块种类；同级列表条目合并保留起始项标记与任务状态，剩余子内容采用其续行缩进。必要时保留块分隔，不能吞并选区外的段落或代码块。不同容器边界和表格网格保持，只删除选中的文字和完整中间块；插入发生在起始边界，不为合并而把剩余内容搬出其容器。同一表格内的跨单元格删除保留行列与未选内容。跨块上下文覆盖全篇且选择其全部内容时，用普通段落文字替换整个文档，包括外围标记、空白和定义。
+
+replaceText 返回 `MarkdownTextEdit`，含一次准备好的 change、结果源码 selection、结果显示坐标中的 insertedRange 和 after 内容；insertedRange 标识实际插入的文字，供输入法组合区和相对选区使用。保留表格／容器边界时，结果显示文本可以仍含结构分隔符，调用方须使用 after 的映射，不能仅以插入字节数推算全部端点。删除后只剩空标题或空列表项时，零长度显示文本映射到标记之后的真实插入点。跨块操作只解析其当前区域，普通单段输入继续使用局部行内解析。
+
+`content.edit { ... }` 顺序消费当前显示坐标，支持 replaceText、setStyle、select 和 restore；整个批次只准备一次对外 change，失败不发布。restore 只接受同一输入上下文保留的快照，恢复其确切源码和选区，不要求它仍是一个段落；用于跨块输入法取消。连续中间快照共享源树，批次结束时只比较该上下文涉及的源码范围。公开准备结果按 §4 的精确快照规则发布，逆向事务恢复原始字节。
+
+MarkdownTextContent 及其 edit builder 也支持 setStyle；styleState 使用同一选区规则汇总各行内块。跨段落、标题、列表项和表格单元格的格式操作分别修改选中的行内文字，合成一次源码事务，保留表格网格、容器标记、代码／扩展等原子块和区外原文。操作保留显示文字与选区范围，after 提供当前区域，独立格式操作的 insertedRange 是选区末尾的空范围。批次内 setStyle 不改变已有 insertedRange，便于在同一事务中为新输入文字设置格式。
+
+### 8.6 Markdown 片段导出与插入
+
+`MarkdownSyntax.exportMarkdown(range)` 使用当前解析的源码 UTF-8 范围，导出可独立解析的语义片段，不修改源文档。整个文档的选择保留原始字节；局部选择可规范化生成写法。单个行内内容内的选择保留格式、代码和链接并补齐定界符；跨块选择保留必要的标题、引用、列表和表格结构。表格片段补齐矩形及必需的空表头，不复制未选单元格的正文。代码、HTML 和扩展按完整原子对象导出，Mermaid 保留围栏，指令保留原始 token，不展开资源或生成图片。
+
+片段中的引用式链接和图片使用原解析已经解析的目标，生成独立的行内形式；脚注补齐其有效定义及传递引用的定义，不重复展开循环。局部区域解析可从快照读取已有区外定义，不能为复制小片段重新解析整篇正文。空选择返回空字符串，非法范围或非 UTF-8 边界报参数错误。URI 保留其字符串含义，资源定位与复制仍由宿主负责；原样复制任意源码使用 snapshot.read。
+
+`MarkdownSyntax.replaceMarkdown(range, markdown)` 的 range 同样是源码坐标。它解析输入片段，把所选显示内容替换为 Markdown 结构，返回 `MarkdownFragmentEdit`，包含一次准备好的 change、结果源码 selection 和 `after: ParsedMarkdownRegion`。操作不发布中间状态；applyTo 使用既有精确快照规则，一次发布可精确撤销。无 UI 程序可直接使用这些接口。
+
+单段片段与目标行内内容合并，采用片段自己的格式，保留两侧文字及样式；多块片段拆开目标段落，继承所在引用／列表容器。不同容器边界及表格网格沿 §8.5 删除规则处理。表格片段粘贴到表格时按矩形写入并保留单元格格式；普通多段内容在单元格中以行内换行表达。脚注名称与目标已有定义冲突时，为片段定义和相应引用一起分配新名称，不能悄悄改用目标原有脚注。落点位于最后插入的可编辑内容末尾；以原子块结束时提供同容器的空白输入行。源码模式直接插入剪贴板原文，不使用本节的语义转换。
+
+表格单元格不能承载独立的列表、代码或扩展块；此类片段在单元格内以其 Markdown 源码的字面文字保留，换行编码为实体。明确的 TSV 矩形操作仍使用 pasteTableTsv。
+
+实现只解析输入片段及目标局部区域，复用现有行内生成、容器前缀、表格写入和源码差量。`after` 与 change.after 是同一份最终不可变快照；UI 可直接接管已准备的解析结果，不在发布边界重复解析。失败不修改文档或历史。
+
+### 8.7 行内代码、链接与图片编辑
+
+MarkdownInlineContent 与 MarkdownTextContent 提供 `setCode(range, enabled)`、`codeState(range, bias)`，范围为显示 UTF-8 字节。转换保留可见文字、原有粗斜体及链接；软／硬换行和文字中的 CR／LF 是代码样式边界，不跨这些边界合并代码 span。图片、HTML、公式、脚注引用及自定义扩展等原子对象保持原样。跨块操作按相交行内块执行并保持容器与表格；反引号长度和 padding 使用现有生成器，无法由 GFM 代码单元格保留的反斜杠加竖线组合照常失败。状态使用 MarkdownStyleState，纯原子对象选区为 Unavailable；折叠位置允许为后续输入查询状态。两个 edit builder 同样提供 setCode，不改变已有 insertedRange。
+
+replaceText 及对应 builder 的可选 `code: Boolean? = None` 指定新文字是否为行内代码；None 沿原有位置样式继承，Some(false) 强制字面文字，Some(true) 按现有代码 span 规则规范化换行后插入。它只控制新文字，不改变未选部分；这使退出代码后的输入不先丢失换行再转换回来。所有修改仍只准备一次普通事务。
+
+MarkdownInlineContent 与其 builder 提供 `setLink(range, destination, title = "")`、`removeLink(range)` 和 `replaceImage(range, alternate, destination, title = "")`。setLink／removeLink 需要非空显示选区，保留选中的样式与原子内容；跨已有链接边界时分开两侧链接，选中部分使用一个直接目标，不产生嵌套链接。解除链接保留显示内容，GFM 自动链接仍遵守 profile，不为屏蔽它插入隐藏字符或任意 HTML。修改引用式链接只改当前使用点，不改共用定义；显式修改定义仍用 setReferenceDefinition。
+
+replaceImage 支持折叠插入和非空替换，alternate、URI 和 title 按图片语法生成；结果选中完整的 U+FFFC 图片对象，源码 selection 指向新图片，after 可继续编辑。更新已有图片保留其外层格式和链接。URI 字符串由宿主提供，文档 Cone 不保存、上传、读取或检查图片资源。非法范围、参数或失败不发布文档。
+
+### 8.8 代码块信息修改
+
+`MarkdownTransformBuilder.setCodeInfo(id, info)` 修改代码块的完整 info 字段，info 必须为单行；语言名是其中第一个空白分隔的词。已是相同解码信息时不改源码。围栏代码只替换信息行的字段，保留正文、容器、换行和未闭合状态；新信息含反引号时将反引号围栏改为足够长的波浪线围栏，避免正文中的定界符提前关闭代码块。字段按既有生成器转义，不解释其中的属性或指令。
+
+缩进代码设置非空信息时转换为围栏代码，保留解析后的代码文字、所在列表／引用／脚注容器、当地换行风格与区外源码。必要的代码缩进和围栏采用规范化写法。所有修改通过同一个源码事务发布，逆向事务恢复原始字节；非代码节点、非法范围或多行信息在发布前失败。
+
+## 9. 扩展语法
+
+`MarkdownProfile` 保存 GFM 开关、math／frontMatter／footnotes 开关，以及有序的 token 语法 `extensions`、逐行块语法 `blockExtensions` 和标准节点 `nodeExtensions` 注册。CommonMark 和 Gfm 保持原有语法，Editor 开启 GFM、公式、front matter 与脚注，并注册 Mermaid 围栏的节点匹配；mdBook 指令由调用方显式注册。配置及扩展的行为在 profile 生命周期中保持不变，改变配置时创建新 profile。解析缓存比较开关与各类注册对象及顺序，不以扩展名称猜测两个不同处理器等价。
+
+`MarkdownExtension` 提供 name、非空 trigger、locations 和 parse。locations 分别选择 Inline、Block 和 Code；Block 只接管已经确定的整个段落输入，不能跨 CommonMark 容器边界，跨容器展开交给后续 processor。Code 明确启用代码块正文中的匹配，不影响 code span 或 HTML。Inline 在代码、普通转义和 HTML 词法之外匹配；相同 trigger 按 profile 注册顺序选择第一个成功结果，固定公式语法优先于自定义匹配。名称重复和保留的内置名称冲突是配置错误。
+
+`MarkdownExtensionInput` 提供带源码映射的 source、当前位置上下文和 UTF-8 范围读取。匹配结果使用该输入内的 Long 字节位置，给出 end、body 范围、字符串属性及 closed；不把它们当作全文偏移。解析器只验证实际匹配范围、前进与标量边界，再构造完整 `MarkdownExtensionValue`。正文、完整 token 和标记均保留原始映射。无匹配返回 None，识别器自身异常照常传播；解析不隐式执行 I/O、展开 include 或生成图片。
+
+内置公式产生 name 为 math 的 Extension 节点，location 区分行内与块级。行内支持单个 `$...$` 与 `\(...\)`；前者正文非空、开头和结尾不为空白，关闭 `$` 后不能紧跟数字，并且不跨物理换行。连续多个 `$` 不被拆成单个开关。块级支持独占行的 `$$`／`\[` 与对应关闭定界符，以及开闭定界符处在同一行的完整公式；正文不解析强调、链接或其他扩展。容器前缀和换行规范化遵守 MarkdownText 映射，TeX 字节在源 snapshot 中不变。
+
+front matter 只在文件起始处（可在 UTF-8 BOM 之后）识别独占行的 `---`，结束标记为独占行的 `---` 或 `...`。它产生 front-matter Extension，body 保存 YAML 源码，不在本层解释 YAML 值。未关闭的块公式或 front matter 持续到所在容器／文件结束，closed 为 false，并带有范围诊断；未闭合的行内公式保留为普通文字。`ParsedMarkdown.diagnostics` 为该快照的派生诊断，不导致源文本丢失或解析失败。
+
+`mdBookDirectives()` 是首个普通自定义注册，识别 `{{#command arguments}}`。它可用于行内、独立段落及明确启用的代码块正文；command 与 arguments 作为属性保存。没有注册时它仍是普通源文本。注册只识别语法，include 内容处理有独立入口；不能因为它位于代码围栏内而隐式解释其他已注册扩展。
+
+### 9.1 标准节点匹配与统一扩展片段
+
+`MarkdownNodeExtension` 提供非空 name 和 `match(input): MarkdownExtensionForm?`。输入包含 snapshot、标准 node 及其语法 parent；匹配不得执行 I/O、改变配置或文档。规则按注册顺序选择首个成功结果，同一名称可由多条节点规则共用。匹配只建立视图，不替换原节点；已有 Extension 节点直接使用自身名称与语义。未命中的 Image 默认使用 image／Inline，CodeBlock 使用 code／Block，其他节点不产生扩展片段。
+
+节点规则作用于块或行内内容，不直接匹配 Document、引用定义、TableRow 或 TableCell 等文档／网格结构；其中的内容节点照常参与识别。形态须与语法位置一致，独占段落的 Image 可以从 Inline 提升为 Block。引用定义的映射保留在实际使用点的语义数据中。
+
+`markdownCodeExtension(language, name = language)` 只匹配相应语言的围栏代码，保留完整 info 与映射正文；缩进代码不被当作带语言的围栏。`markdownImageExtension(standaloneBlock = false, name = "image")` 匹配 Image；开启 standaloneBlock 时，仅在图片是段落中唯一非空白内容时返回 Block，其余返回 Inline。这两项均为普通节点规则，显式规则先于默认回退。
+
+`MarkdownExtensionSpan` 保存 snapshot、原始 node、name、Inline／Block 的 form、closed 和最近的扩展父节点身份。sourceRange 为原始 node.range，含定界符或围栏。语义数据从 node.content 与 children 读取：图片 alt、目标、title 和引用 label／定义处映射保持原样，不合成为一个 body；使用点的范围不包含远处引用定义。代码和自定义语法同样复用原有映射。Code 只表示允许在代码正文识别指令的上下文，对应的子片段使用 Inline 形态，不增加第三种展示形态。非空片段必须相互分离或完整包含，匹配结果与实际语法位置冲突时报告参数错误。
+
+### 9.2 扩展索引与快照
+
+`MarkdownSyntax.extensionIndex()` 和 `MarkdownInlineContent.extensionIndex()` 显式构造不可变 `MarkdownExtensionIndex`，供完整文档、局部树和连续行内编辑共用。索引持有 snapshot 与源码顺序的 spans；`forNode(id)` 按节点身份查询，未收录或其他解析的身份返回 None，不能按相同 ordinal 混用。`at(position, bias)` 返回包含位置的最内层片段：起点仅归 After，终点仅归 Before。`intersect(range)` 按源码顺序返回与非空范围相交的片段，包括父子片段；空范围返回空数组。位置与范围必须是本 snapshot 的合法 UTF-8 边界，区域外合法查询返回空结果。
+
+索引构建不物化整个源字符串。查询在有序兄弟范围中二分并沿嵌套关系访问，工作量随匹配结果和嵌套深度增长，不扫描其余片段。源码变化后旧索引继续只属于旧快照；调用方在新的完整／局部语法上重新建立索引。未变化的相同解析结果可复用索引，活动源码编辑区域另随差量维护，不将旧片段直接用于修改新正文。构建索引不要求 renderer，也不执行内容展开。
+
+### 9.3 逐行块语法接入
+
+`MarkdownBlockExtension` 提供非空 name、同一行内的非空 trigger、interruptsParagraph 和 `start(input): MarkdownBlockStart?`。同名规则可以覆盖不同 trigger，但不能占用已启用的 math／front-matter 内置名称。parser 在决定新段落之前，按 blockExtensions 的顺序选择首个成功匹配。开始位置必须是当前容器内至多三列缩进后的非空白位置；代码和 HTML 块内部不触发。已存在的内置块语法优先，扩展不能抢占 Markdown 围栏或容器标记。interruptsParagraph 默认 false，包括引用／列表的 lazy continuation；启用后才可在没有空行时结束已有段落并开始扩展。
+
+start 的 input 为去掉容器前缀和开始缩进的当前逻辑行，location 为 Block，包含规范化为 LF 的行尾及原始来源映射。末行没有物理换行时也提供逻辑 LF，映射到文件末尾的空区间。它只读当前行，不预先读取后续容器内容。匹配返回每次出现独立的 `MarkdownBlockStart(parser, closed = false, parseBody = false)`；closed 为 true 时当前行已经构成完整块。parser 实例只属于这次解析和出现位置，不保存到 profile 作为可变共享状态。
+
+`MarkdownBlockParser.next(input)` 接收当前容器内的下一逻辑行，并返回 `MarkdownBlockContinuation`：Continue 收入当前行；Close 收入当前行并正常闭合；Stop 在当前行之前结束，把该行交还普通块解析。空行照常交给 next。引用前缀、列表缩进与制表位由 parser 处理，逐行输入最多再去掉开始时的缩进列数。容器结束和文件末尾不把外部内容交给扩展；此时以及 Stop 时的完整性由 closedAtBoundary 决定，默认 false，适用于需要显式闭合符号的语法。
+
+结束时调用 `MarkdownBlockParser.finish(input, closed): MarkdownBlockResult`。input 是此次已收入各逻辑行的完整映射文本；结果给出其中的 body 范围与 attributes。范围必须有效且处于 UTF-8 边界，不能读取或吞入未消费的下一行。parser 构造 location 为 Block 的 `MarkdownExtensionValue`，完整源文档保留在 snapshot，node.range 包含此次消费行的原始范围，source 与 body 保留去除容器前缀后的映射。未闭合块照常保留、生成范围诊断，并进入扩展索引。
+
+parseBody 默认 false，正文不解析强调、链接或其他 Markdown。启用时，正文按同一 profile 解析为该 Extension 的子节点，参加文档级引用定义解析、结构查询与扩展索引；body 必须严格小于完整 token，确保嵌套解析前进。内部块通过显式工作队列解析，不能依赖机器调用栈承受任意嵌套。其他容器和原始文件的坐标不能混用，区域解析同样保留全局来源位置。
+
+这一路径承载真正的跨行块语法。既有 `MarkdownExtensionLocations.blocks` 继续表示整段落 token 识别，适用于 mdBook／目录等依赖普通段落边界的指令，不等价于逐行块 parser。两种语法入口与标准节点匹配最终共用同一组 Extension／片段类型，展示仍只有 Inline 与 Block。无需 UI、资源访问、内容 processor 或 renderer 即可使用。
+
+## 10. 脚注
+
+footnotes 开关识别 `[^label]:` 定义与 `[^label]` 引用。定义是可包含段落、引用、列表和代码块的容器，后续缩进行消费四列，允许首段的普通 lazy continuation。标签使用与引用定义相同的 Unicode 大小写和空白归一规则；同名定义保留在语法树中，引用选择第一个。没有对应定义的引用保持字面文本，不丢失未完成输入。
+
+`FootnoteDefinition` 和 `FootnoteReference` 保存归一标签，完整范围及标记仍在 MarkdownNode。`ParsedMarkdown.footnoteDefinition(label)` 查询实际定义；`footnotes` 按正文首次引用顺序返回编号、定义身份与引用身份集合，再按已使用脚注中的引用继续展开编号。未使用定义不会单独占用编号，循环引用不会重复加入队列。源文档中的定义位置和拼写不因编号改变。
+
+## 11. 无 UI 内容处理与资源
+
+`MarkdownProcessingSession(resolver, processors)` 对不可变 snapshot 显式执行 `process(snapshot, baseUri, profile)`，返回 `ProcessedMarkdown`。它包含原始快照及其 sourceParsed、派生解析、分段来源映射、实际资源依赖和诊断；原文、revision 与订阅不改变。没有替换时 expanded 可以与 sourceParsed 共享结果，发生替换后的派生快照具有独立文档身份。默认输出仍写原始 snapshot；需要展开后的 Markdown 时显式写 `result.expanded.snapshot`。session 由调用方串行使用，处理器与 resolver 的配置在其生命周期内保持不变；配置改变时建立新 session。
+
+`MarkdownResourceResolver` 提供 resolve(baseUri, reference)、version(uri) 和 read(uri)。URI 是调用方定义的稳定逻辑地址，resolve 负责普通相对路径解析；version 返回不读取正文的可选版本，None 表示资源不存在。read 返回同一个资源快照的 UTF-8 文本与版本；读期间发生修改时，以实际返回的版本为准。解析器仍不调用 resolver。平台文件、网络与内存适配在应用侧实现，不增加文档库的平台依赖。
+
+session 先比较输入文档身份、revision、base URI、profile 和已用资源版本，命中直接返回既有结果，不重新读取正文或重放处理。源 snapshot／profile 没有变化时继续复用 sourceParsed，资源更新只重做相关读取及派生展开。单次处理对同一 URI 使用同一资源快照；版本改变才读新正文。缺失资源也记录依赖，因此资源出现后可重处理；普通读取或版本查询异常形成当前指令诊断，下次显式 process 可以重试。缓存只保留当前结果及相关资源，clearCache 明确释放引用。缓存不读取内容以复核摘要，不检查文件系统来源。
+
+`MarkdownProcessor` 以扩展 name 注册，接收节点、当前派生解析、base URI 和本次资源读取入口，返回 Keep、Replace(fragment) 或诊断。重复 name 是配置错误。资源 I/O 错误转为诊断；处理器自身的编程错误照常传播，不发布部分结果。未注册的处理器不影响语法解析或原文保存。
+
+片段由 `MarkdownFragmentPart.Text(text, resourceUri?)` 和 `Resource(resource, range)` 组成。Text 是处理器已经生成的 Markdown，映射到整个原指令；可以给出资源地址，但没有精确范围时不伪造字节对应。Resource 是本次读取的不可变资源范围，保留逐字节来源和自己的 base URI，可继续处理其中的扩展。Text 不再次执行内容处理器，避免对已经生成的结果反复替换；它仍正常参与 Markdown 解析和展示。Resource 范围在消费时检查编码边界，嵌套处理中重复相同资源选区的祖先链报告循环，不按任意深度或通用预算截断文档。
+
+每次替换后重新解析实际上下文，再处理后面的指令；前一个展开可能打开或关闭代码围栏，因此不能按旧解析批量执行后续处理器，也不把分别解析的 include AST 拼接在一起。所属列表、引用及缩进代码的续行前缀应用到新增实际行，首行沿用所在位置。代码块内插入的是原始代码正文，不转义成普通 Markdown；随后仍按真实围栏语法解析，包含的关闭围栏会产生相应结构变化。来自不同生成上下文拼接而成的一个指令不继续隐式展开，并带有诊断；它的字面内容和解析结构仍保留。
+
+`MarkdownSourceMap` 的 spans 使用派生快照中的范围。Original 精确映射至原始 snapshot；Generated 保存最外层原指令范围、可选资源 URI 和可选资源范围。资源原样片段保留精确范围；补出的容器前缀只映射至指令和资源地址。sourceAt／expandedAt 以 Before／After 处理隐藏、替换和删除边界，生成内容对应整个指令；origins(range) 返回裁切后的来源片段，不能据此把生成正文当成可写源文本。ProcessedMarkdown 的所有诊断范围属于其 expanded.snapshot，可通过 sourceMap 返回原指令或实际资源位置。
+
+## 12. mdBook include
+
+`mdBookProcessor()` 与 `mdBookDirectives()` 配套，处理 include，其他命令保留源码并给出诊断。支持完整文件、`:N` 单行、`:N:M` 包含式末行、`::M`、`:N:` 与 anchor。行号为一基，越界、零、反向和非法数字均诊断；物理文件末尾换行不额外产生可选择的末尾空行。所选行之间保持资源的实际换行，最后一行的终止符不进入替换，以复用指令所在行的终止符。空文件得到空片段。
+
+anchor 用 `ANCHOR: name`／`ANCHOR_END: name` 成对标记，允许注释中的标记和嵌套；anchor 选中的正文忽略所有 anchor 标记行，整文件和行号选择仍按原样范围处理。重复同名的完整区段按文件顺序连接；缺失、未配对或错误关闭报告诊断。路径相对包含指令的文件解析，嵌套 include 保留自己的 URI。普通 Markdown、表格与围栏上下文均使用 §11 的派生重解析和来源合同；不以简单别名宣称兼容 rustdoc_include 的隐藏行行为。
+
+## 13. 源码搜索与替换
+
+`MarkdownSnapshot.search(MarkdownSearchQuery)` 显式搜索该不可变快照的完整 Markdown 原文，不解析或展开指令。query 包含 text、regularExpression、caseSensitive 和 wholeWord；默认普通文本、不区分大小写、不限定整词。空查询返回空结果，显式正则零宽模式仍正常匹配。匹配复用 scoop.regex 的 PCRE2 Unicode 规则，正则模式默认启用 Multiline；整词限制使用 Unicode `\w` 的两侧边界，不隐式规范化 Unicode 或换行。语法／匹配错误沿 regex 的既有异常报告。
+
+`MarkdownSearchResult` 保存原 snapshot、query 和有序匹配范围，count 返回匹配数量，索引查询返回源码 UTF-8 字节范围。next(position, backwards) 循环查找起点不早于位置的下一项，反向查找起点严格早于位置的一项；无匹配返回 None。intersecting(range) 只遍历相交匹配，零宽匹配包含落在范围端点上的位置，供虚拟视口按需查询。扫描在同一次遍历中换算标量／字节坐标，不逐匹配从全文开头重新计数。
+
+prepareReplace(index, text, template) 和 prepareReplaceAll(text, template) 返回普通 MarkdownChange，不立即修改文档；发布时检查原快照身份。默认替换文本按字面使用。显式 template 只适用于正则查询，支持 `$0`、`$1` 等编号、`${name}` 命名捕获和 `$$` 字面美元符号；未参与的已声明捕获为空，非法引用／语法在准备时失败，反斜杠按字面保留。全部替换消费本次搜索的原有匹配，不继续搜索新插入内容，并合成一次有序源码事务；零宽匹配遵循 regex 迭代的前进规则，逆向事务恢复原字节。
+
+搜索是显式全文操作，可在调用方工作线程上运行；正则成本取决于表达式，源码字节坐标换算随扫描位置单调推进。它不改变普通编辑、解析和保存路径，也不成为逐键全文复制的前置步骤。
+
+## 14. 文档导航与目录
+
+`snapshot.positionAt(line, column)` 和 `lineColumn(position)` 使用从零开始的物理行及 Unicode 标量列，字节位置仍沿用 MarkdownPosition。行号和负列非法；超过行尾的列停在正文末尾，CR／LF／CRLF 定界符不计入列数。查找一行不复制全文，列换算只扫描该行需要的片段。
+
+`ParsedMarkdown.navigation()` 显式建立不可变 MarkdownNavigation，绑定该解析与 snapshot。headings 按源码顺序列出正文中的 ATX／Setext 标题，包括引用和列表内的标题；代码、原始 HTML、扩展正文及脚注定义内部不形成文档章节。MarkdownHeading 保存 node、level、解码后的 title、anchor、原始 range、section 和父标题索引。section 延续到下一个同级或更高标题之前，最后一节到文档末尾；父关系按实际出现的标题层级处理，跳级不生成虚构标题。headingAt(position) 二分定位当前位置之前最近的标题。
+
+标题文字使用文字／代码的解码内容及图片替代文字，忽略 HTML 标签和脚注引用，扩展使用其原始 body，不执行处理器或图像工具。标题空白合为普通空格。anchor 使用 Unicode 小写，保留字母、组合标记、数字、下划线与连字符，空白合为连字符，删除其他标点／符号；空结果用 section。按出现次序补 -1、-2 等后缀，避开已使用的名称及脚注锚点，不隐式规范化 Unicode。
+
+`resolveLink(destination)` 仅处理本文件的 #fragment，以 scoop.url 解码百分号转义；空 fragment 指向文档开头，缺失或非法 fragment 返回 None。已使用脚注的定义与引用分别提供 fn-label、fnref-label、fnref-label-2 等锚点，label 使用解析后的规范标签。目标是本 snapshot 的源码范围，普通外部 URI 不触发 I/O。
+
+`navigation.tableOfContents(minLevel, maxLevel)` 显式生成链接列表 Markdown，使用同一组标题及锚点，层级跳过不在范围内的标题；空标题显示 Untitled。`tableOfContentsDirective()` 注册独占一行的 [TOC]／[toc]（字母不区分大小写），不匹配围栏内或转义文字；Editor profile 默认包含它。语法节点保留原指令，解析不写入生成的目录。无 UI 程序可从 navigation 生成目录；UI 在最终预览语法上派生目录，使处理器展开的标题也参与展示。
+
+## 15. 后续结构与处理
+
+后续结构修改与跨修改的节点身份复用继续按设计增补。普通解析结果里的身份不构成跨独立解析的匹配猜测。保存、修改与解析各自有明确边界，parse 不成为读取快照或源码输入的隐式副作用；公式与 Mermaid 的图像工具不参与 headless 文档的解析／生成合法性。
