@@ -18,6 +18,8 @@ internal fun mdRichRawCommand(host: MarkdownRichHost, command: TextEditCommand):
             }
         }
         case Paste -> return mdRichRawClipboard(host, MarkdownClipboardCommand.PasteMarkdown)
+        case DeleteSelection -> if (!host.readOnly && !editor.selection.collapsed)
+            host.perform { editor.replaceSelection("") }
         case Delete(val deletion) -> {
             val value = mdRichDelete(host, deletion) ?: return false
             val range =

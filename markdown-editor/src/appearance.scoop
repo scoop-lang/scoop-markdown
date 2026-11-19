@@ -137,7 +137,8 @@ internal fun editorIconButton(
     hint: String,
     action: () -> Unit,
     enabled: Boolean = true,
-    selected: Boolean = false
+    selected: Boolean = false,
+    automationId: String? = None
 ): View =
     tooltip(
         button(
@@ -151,6 +152,7 @@ internal fun editorIconButton(
             action
         ) {
             this.enabled = enabled
+            semantics = ComponentSemantics(name = Some(hint), automationId = automationId)
             size = ButtonSize.IconSm
             variant = ButtonVariant.Ghost
             style =

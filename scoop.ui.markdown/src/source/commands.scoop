@@ -69,6 +69,8 @@ internal fun mdSourceCommand(host: MarkdownSourceHost, command: TextEditCommand)
             }
         }
         case Paste -> return mdSourcePaste(host, false)
+        case DeleteSelection -> if (!host.options.readOnly && !state.selection.collapsed)
+            host.perform({ state.replaceSelection("") })
         case Delete(val deletion) -> {
             if (host.options.readOnly)
                 return true

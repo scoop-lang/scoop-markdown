@@ -186,6 +186,7 @@ private fun EditorWindow.viewMenu(): NativeMenuContent {
             ) { shortcut = Some(editorShortcut(key, alt = true)) }
         }
         separator(ViewKey.Text("sidebar-separator"))
+        checkboxItem(ViewKey.Text("word-wrap"), "自动换行", owner.wordWrap.binding())
         checkboxItem(ViewKey.Text("sidebar"), "显示大纲", owner.outline.binding())
     }
 }

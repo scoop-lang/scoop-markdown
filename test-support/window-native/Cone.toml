@@ -137,3 +137,11 @@ when = { os = "linux", env = "gnu" }
 
 [[native.sources]]
 path = "native/dialog_paths.c"
+
+[[native.sources]]
+path = "native/contact.m"
+when = { os = "darwin" }
+
+[[native.sources]]
+path = "native/interactions.m"
+when = { os = "darwin" }

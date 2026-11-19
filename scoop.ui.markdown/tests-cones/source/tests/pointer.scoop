@@ -1,0 +1,181 @@
+package scoop.tests.markdown.source
+
+import scoop.graphics.*
+import scoop.markdown.*
+import scoop.test.*
+import scoop.tests.surface.moveSurfacePointer
+import scoop.tests.window.nativeEditorPointer
+import scoop.ui.markdown.*
+import scoop.window.*
+
+@Test
+private class MarkdownPointerWindowTests {
+    @Test
+    fun nativeClickCountsSelectAndDragWordsAndLinesInAllThreeHosts() {
+        mdRunViewportProbe(MdViewportTest.Pointer)
+    }
+}
+
+internal fun mdAdvancePointer(probe: MdViewportProbe, active: ActiveApplication) {
+    val editor = probe.editor
+    val field = probe.field!!
+    val lineEnd =
+        if (probe.kind == 0)
+            19L
+        else
+            18L
+    when (probe.step.value) {
+        case 0 -> probe.next { assertTrue(mdInteractionArea(field).requestFocus()) }
+        case 1 -> probe.next { mdPointerClick(probe, 7L, 1) }
+        case 2 -> {
+            mdPointerSelection(probe, 7L, 7L)
+            probe.next { mdPointerClick(probe, 7L, 2) }
+        }
+        case 3 -> {
+            mdPointerSelection(probe, 6L, 9L)
+            probe.next { mdPointerClick(probe, 7L, 3) }
+        }
+        case 4 -> {
+            mdPointerSelection(probe, 0L, lineEnd)
+            probe.next { mdPointerButton(probe, 7L, true, 2) }
+        }
+        case 5 -> {
+            mdPointerSelection(probe, 6L, 9L)
+            probe.next { mdPointerMove(probe, 1L) }
+        }
+        case 6 -> {
+            mdPointerSelection(probe, 9L, 0L)
+            probe.next { mdPointerMove(probe, 27L) }
+        }
+        case 7 -> {
+            mdPointerSelection(probe, 6L, 29L)
+            probe.next { mdPointerButton(probe, 27L, false, 2) }
+        }
+        case 8 -> probe.next { mdPointerButton(probe, 27L, true, 3) }
+        case 9 -> {
+            mdPointerSelection(probe, 20L, lineEnd + 20L)
+            probe.next { mdPointerMove(probe, 1L) }
+        }
+        case 10 -> {
+            mdPointerSelection(probe, lineEnd + 20L, 0L)
+            probe.next { mdPointerButton(probe, 1L, false, 3) }
+        }
+        case 11 -> probe.next {
+            editor.setSelection(MarkdownSelection(MarkdownPosition(7L), MarkdownPosition(7L)))
+            mdPointerClick(probe, 27L, 3, true)
+        }
+        case 12 -> {
+            mdPointerSelection(probe, 7L, 27L)
+            assertEquals(probe.original, editor.document.toMarkdown())
+            probe.next {
+                editor.replace(
+                    MarkdownRange(0L, editor.snapshot.byteLength),
+                    "[link word](https://example.invalid)"
+                )
+                field.scroll.scrollTo(Point(0.0, 0.0))
+            }
+        }
+        case 13 -> probe.next { mdPointerClick(probe, 3L, 1) }
+        case 14 -> {
+            assertEquals(
+                if (probe.kind == 1)
+                    1
+                else
+                    0,
+                probe.openedLinks
+            )
+            probe.next { mdPointerClick(probe, 3L, 2) }
+        }
+        case 15 -> {
+            mdPointerSelection(probe, 1L, 5L)
+            assertEquals(
+                if (probe.kind == 1)
+                    1
+                else
+                    0,
+                probe.openedLinks
+            )
+            probe.next { mdPointerClick(probe, 3L, 3) }
+        }
+        case 16 -> {
+            mdPointerSelection(
+                probe,
+                if (probe.kind == 0)
+                    0L
+                else
+                    1L,
+                if (probe.kind == 0)
+                    editor.snapshot.byteLength
+                else
+                    10L
+            )
+            assertEquals(
+                if (probe.kind == 1)
+                    1
+                else
+                    0,
+                probe.openedLinks
+            )
+            probe.next { probe.mounted = false }
+        }
+        case 17 -> {
+            assertTrue(field.retired)
+            if (probe.kind < 2) {
+                editor.replace(MarkdownRange(0L, editor.snapshot.byteLength), probe.original)
+                probe.kind += 1
+                probe.openedLinks = 0
+                probe.accepted = -1
+                probe.mounted = true
+                probe.step.value = 0
+            } else {
+                probe.finished = true
+                active.requestExit()
+            }
+        }
+        else -> fail(Some("Unexpected native Markdown pointer step"))
+    }
+}
+
+private fun mdPointerSelection(probe: MdViewportProbe, anchor: Long, cursor: Long) {
+    assertEquals(anchor, probe.editor.selection.anchor.byteOffset)
+    assertEquals(cursor, probe.editor.selection.cursor.byteOffset)
+}
+
+private fun mdPointerPoint(probe: MdViewportProbe, offset: Long): Point {
+    val field = probe.field!!
+    val caret = mdInteractionCaret(field, offset)
+    val point =
+        mdInteractionArea(field).toWindow(Rect(caret.x, caret.y + caret.height / 2.0, 0.0, 0.0))!!
+    return Point(point.x, point.y)
+}
+
+private fun mdPointerMove(probe: MdViewportProbe, offset: Long) {
+    val point = mdPointerPoint(probe, offset)
+    assertTrue(moveSurfacePointer(probe.window!!, point.x, point.y))
+}
+
+private fun mdPointerButton(
+    probe: MdViewportProbe,
+    offset: Long,
+    down: Boolean,
+    clicks: Int,
+    shift: Boolean = false
+) {
+    val point = mdPointerPoint(probe, offset)
+    mdNativeView(probe.window!!) {
+        view -> @Unsafe
+        {
+            assertEquals(0, nativeEditorPointer(view, point.x, point.y, down, clicks, shift))
+        }
+    }
+}
+
+private fun mdPointerClick(
+    probe: MdViewportProbe,
+    offset: Long,
+    clicks: Int,
+    shift: Boolean = false
+) {
+    mdPointerButton(probe, offset, true, clicks, shift)
+    mdPointerButton(probe, offset, false, clicks, shift)
+}

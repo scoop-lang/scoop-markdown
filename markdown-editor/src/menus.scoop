@@ -7,14 +7,14 @@ import scoop.ui.component.*
 import scoop.ui.markdown.*
 import scoop.window.*
 
-private fun marked(label: String, state: MarkdownStyleState): String =
+internal fun marked(label: String, state: MarkdownStyleState): String =
     when (state) {
         case On -> "✓  " + label
         case Mixed -> "–  " + label
         else -> label
     }
 
-private fun MenuBuilder.block(owner: EditorWindow, label: String, command: MarkdownBlockCommand) {
+internal fun MenuBuilder.block(owner: EditorWindow, label: String, command: MarkdownBlockCommand) {
     val status = owner.view.blockState(command)
     item(
         ViewKey.Text(label),
@@ -164,6 +164,7 @@ internal fun EditorWindow.formatMenu(): View {
         ) {
             variant = ButtonVariant.Ghost;
             style = editorControlStyle()
+            semantics = ComponentSemantics(name = Some("更多格式"))
         }
         width = 224.0
         alignment = OverlayAlignment.End
@@ -226,6 +227,9 @@ internal fun EditorWindow.moreMenu(): View {
                 { owner.pendingMore = Some({ owner.location.open(owner.navigation) }) }
             ) { shortcut = Some(editorShortcut("l")) }
             separator(ViewKey.Text("outline"))
+            checkboxItem(ViewKey.Text("word-wrap"), "自动换行", owner.wordWrap.binding()) {
+                closeOnSelect = Some(true)
+            }
             checkboxItem(ViewKey.Text("sidebar"), "显示大纲", owner.outline.binding()) {
                 closeOnSelect = Some(true)
             }
@@ -313,6 +317,8 @@ internal fun EditorWindow.moreMenu(): View {
             variant = ButtonVariant.Ghost;
             size = ButtonSize.IconSm;
             style = editorControlStyle()
+            semantics =
+                ComponentSemantics(name = Some("更多选项"), automationId = Some("markdown-more"))
         }
         width = 238.0
         alignment = OverlayAlignment.End

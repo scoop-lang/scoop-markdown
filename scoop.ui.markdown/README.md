@@ -6,7 +6,41 @@ Markdown 编辑器的纯 Scoop UI Cone。文档内容和结构操作来自独立
 
 组合控件使用标准 `scoop.ui.component` 的可调分栏，应用在实际 run／mount 入口绑定 `ThemeSource`，与按钮等组件相同。示例使用 `context(ThemeSource(shadcnTheme())) { runUiApplication(...) }`。单独的源码／预览／富文本视图继续使用其显式样式，不要求分栏的主题上下文。
 
-源码、预览和富文本的 View／Host 自动为溢出的轴显示滚动条，支持滑块拖动、轨道翻页和滚轮，使用已有的虚拟视口及 ScrollState；双栏滚动仍可同步。鼠标进入可选择的正文时显示系统 I 型光标，移到滚动条或离开正文后恢复缺省光标；只读模式保留这一选择提示。
+源码、预览和富文本的 View／Host 默认接入与 UI 文本框相同的原生交互接口，继续共享文档、选区、历史和虚拟视口。鼠标进入可选择的正文时使用系统 I 型光标；只读预览保留选择、复制、拖出和滚动。
+
+鼠标／触控板单击定位、双击选词、三击选逻辑行，继续拖动时按词／行扩选；Shift 点击按字符扩选。预览与富文本以显示文字的边界映射回源码，多击链接文字只扩展选区。
+
+| 能力 | 行为 |
+| --- | --- |
+| 原生上下文菜单 | 右键、平台辅助点击、Menu／Shift-F10、长按及无障碍菜单动作；选区内保留方向，选区外按配置放置光标或选词。可写面提供撤销、重做、剪切、复制、粘贴、删除和全选，只读面提供复制和全选 |
+| 拖放 | 源码拖出字面源码，预览拖出显示文字；库内目标保留 Markdown 片段格式。文本／URL 可落入可写区域，显示插入光标并在边缘滚动；同一文档移动只产生一个撤销项。文件不自动读入 |
+| 触摸与手势 | Touch／Pen 短按、双击选词、三击选行、长按菜单、选区端点拖动；移动和多触点按公共手势归属取消点击。触摸滚动使用 ScrollPan 和原有视口 |
+| 滚动条 | 跟随系统显示偏好，支持自动隐藏、边缘唤醒、悬停／拖动宽度与透明度、轨道翻页／跳转及长按重复；可选 Overlay／Gutter，支持双轴和 RTL |
+| 回弹与惯性 | 真实滚轮 phase／momentumPhase 和触摸滚动交给 ScrollViewport；逻辑位置有界，回弹影响呈现坐标，遵守减少动画偏好 |
+| Accessibility | 发布文本内容、名称、焦点、定向选区和只读／禁用状态，提供选择、替换、显露和菜单动作；源码区域与富文本显示文字分别映射到同一份文档，滚动轴提供独立语义 |
+
+通过 `MarkdownSourceOptions.interaction` 和 `MarkdownPreviewOptions.interaction` 配置 `MarkdownInteractionOptions`；`MarkdownEditorOptions.source`／`rich` 分别传入两面的选项。`contextMenu`、`drag`、`touch`、`touchScroll`、`scrollPhysics`、`scrollbarBehavior` 沿用 UI 库类型，`acceptDrops` 控制拖入，`semantics` 提供名称和状态，`reduceMotion` 可由宿主额外关闭动画。Host 的 `showContextMenu()` 在该文本面已聚焦且有可见 Accepted 几何时打开菜单。
+
+`MarkdownInteractionOptions.contextMenuItems` 可传入 `() -> NativeMenuContent`，在标准文本菜单之后追加原生菜单项和嵌套子菜单。回调在右键选区定位完成后调用，可据当前选区生成启用状态；默认不追加内容。编辑器应用用此接口提供文字格式及“标题”子菜单。
+
+`MarkdownSourceOptions.wrap` 控制源码折行。`MarkdownPreviewOptions.wrapProse` 默认开启，控制段落、标题、列表和引用文字的折行；关闭后使用自然文本宽度，并保留段落边界与 Markdown 硬换行。`wrapLongLines` 默认关闭，开启后代码、原始块及宽表格也在当前视口内排版。两个预览选项同时开启时横向滚动范围归零；应用级自动换行应同时更新源码的 `wrap` 和富文本的这两个选项。配置只改变显示和布局，不改写 Markdown。
+
+```scoop
+import scoop.ui.component.*
+import scoop.ui.markdown.*
+import scoop.ui.text.*
+import scoop.window.accessibility.*
+
+val interaction = MarkdownInteractionOptions(
+    contextMenu = textContextMenu { selection = TextContextMenuSelection.SelectWord },
+    scrollbarBehavior = scrollbarBehavior { placement = ScrollbarPlacement.Gutter },
+    semantics = SemanticProperties(name = Some("Markdown source"))
+)
+val options = MarkdownSourceOptions(lineNumbers = true, interaction = interaction)
+// In render(): markdownSourceEditor(editor, options = options)
+```
+
+实际操作步骤与演示文稿见[交互验证](../docs/INTERACTIONS.md)。
 
 开发期间从另一个 Cone 使用 path 依赖：
 

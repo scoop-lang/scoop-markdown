@@ -1,0 +1,164 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.markdown.*
+import scoop.surface.*
+import scoop.ui.*
+import scoop.ui.text.*
+import scoop.window.*
+
+private class MdDragCandidate(val editor: MarkdownEditorState, val point: Point) {
+    val snapshot = editor.snapshot
+    val selection = editor.selection
+}
+
+internal class MdTextDrag(private val target: MdTextTarget): Closeable {
+    private var candidate: MdDragCandidate? = None
+    private var closed = false
+    private val binding =
+        target.scope.dragSource(target.area, options()) { start -> prepare(start) }
+    private val enabled: Boolean get() =
+        !closed &&
+            target.enabled &&
+            target.options.drag.enabled &&
+            target.options.drag.copyPolicy !=
+            TextCopyPolicy.Deny &&
+            (
+                target.options.drag.effects.copy ||
+                    (!target.readOnly && target.options.drag.effects.move)
+            )
+    private fun options(): DragSourceOptions =
+        DragSourceOptions(
+            target.options.drag.threshold,
+            enabled,
+            contacts = target.options.touch.enabled
+        )
+    private fun valid(value: MdDragCandidate): Boolean =
+        enabled &&
+            target.ready() &&
+            target.editor ===
+            value.editor &&
+            target.editor.snapshot ===
+            value.snapshot &&
+            target.editor.selection ==
+            value.selection &&
+            !target.editor.isComposing
+    fun update() {
+        if (closed)
+            return
+        when (candidate) {
+            case Some(val value) -> if (!valid(value))
+                candidate = None
+            case None -> Unit
+        }
+        binding.update(options()) { start -> prepare(start) }
+    }
+    private fun prepare(start: DragSourceStart): DragSourceData? {
+        val pending = candidate ?: return None
+        if (!valid(pending) || !target.containsSelection(start.start))
+            return None
+        val content = target.export() ?: return None
+        val effects =
+            DragEffects(
+                target.options.drag.effects.copy,
+                target.options.drag.effects.move && !target.readOnly,
+                false
+            )
+        val transfer =
+            MdTextTransfer(
+                target,
+                target.editor,
+                pending.snapshot,
+                pending.selection,
+                content,
+                effects,
+                target.options.drag.onCompleted
+            )
+        candidate = None
+        target.stopSelecting()
+        return Some(
+            DragSourceData(
+                DragContent.Text(content.plain),
+                effects,
+                Some(transfer),
+                { result -> mdCompleteTextTransfer(transfer, result) }
+            )
+        )
+    }
+    fun handle(context: RoutedEventContext, event: InputEvent): Boolean {
+        if (closed)
+            return false
+        if (context.phase == RoutedPhase.Notification) {
+            when (event) {
+                case Pointer(InputPointerEvent.Cancelled(_, _)) -> candidate = None
+                case Contact(InputContactEvent.Cancelled(_, _, _)) -> candidate = None
+                case FocusChanged(false) -> candidate = None
+                else -> Unit
+            }
+            return false
+        }
+        if (context.phase != RoutedPhase.Default)
+            return false
+        when (event) {
+            case Pointer(
+                InputPointerEvent.Button(val pointer, MouseButton.Left, val state, val count)
+            ) -> {
+                if (state == ElementState.Pressed) {
+                    candidate = None
+                    val point = context.localPosition ?: return false
+                    if (
+                        enabled &&
+                            count ==
+                            1 &&
+                            !pointer.state.modifiers.shift &&
+                            target.ready() &&
+                            !target.editor.isComposing &&
+                            target.containsSelection(point)
+                    ) {
+                        candidate = Some(MdDragCandidate(target.editor, point))
+                        target.stopSelecting()
+                        target.area.requestFocus(FocusOrigin.Pointer)
+                        return true
+                    }
+                } else {
+                    val pending = candidate ?: return binding.isDragging
+                    candidate = None
+                    if (valid(pending) && !binding.isDragging)
+                        target.tap(context.localPosition ?: pending.point, 1)
+                    return true
+                }
+            }
+            case Contact(InputContactEvent.Began(val value)) -> {
+                val point = context.localPosition ?: return false
+                if (
+                    enabled &&
+                        !value.pointer.modifiers.shift &&
+                        target.ready() &&
+                        !target.editor.isComposing &&
+                        target.containsSelection(point)
+                )
+                    candidate = Some(MdDragCandidate(target.editor, point))
+            }
+            case Pointer(InputPointerEvent.Moved(_)) -> return when (candidate) {
+                case Some(_) -> true
+                case None -> binding.isDragging
+            }
+            case Pointer(InputPointerEvent.Wheel(_, _, _, _)) -> cancel()
+            case Keyboard(_) -> cancel()
+            case TextCommand(_) -> cancel()
+            else -> Unit
+        }
+        return false
+    }
+    fun cancel() {
+        candidate = None;
+        binding.cancelPending()
+    }
+    public override fun close() {
+        if (closed)
+            return
+        closed = true
+        candidate = None
+        binding.close()
+    }
+}

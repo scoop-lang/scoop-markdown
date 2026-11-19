@@ -1,0 +1,185 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.markdown.*
+import scoop.surface.*
+import scoop.ui.*
+import scoop.ui.text.*
+import scoop.window.*
+import scoop.window.accessibility.*
+
+/** One document node routes assistive actions through the same editing host. */
+internal class MdTextSemantics(
+    private val target: MdTextTarget,
+    private val menu: MdTextMenu
+): Closeable {
+    val handle = target.scope.semantics(SemanticRole.TextField)
+    private var content: MdSemanticText? = None
+    private var closed = false
+
+    init {
+        handle.bindFocus(Some(target.focus))
+    }
+
+    fun update() {
+        if (closed)
+            return
+        val input = target.options.semantics
+        if (input.ignored || input.hidden || !target.ready()) {
+            handle.update(properties(None, None, false))
+            return
+        }
+        when (content) {
+            case Some(val previous) -> if (!previous.matches(target))
+                content = None
+            case None -> Unit
+        }
+        when (content) {
+            case None -> {
+                content = MdSemanticText.create(target)
+                // Facts published after a first layout need their own accepted semantic geometry.
+                target.scope.requestFrame()
+            }
+            case Some(_) -> Unit
+        }
+        val text = content ?: return
+        val selected = target.editor.selection
+        val selection =
+            Utf8Selection(
+                text.offset(selected.anchor, selected.anchorBias),
+                text.offset(selected.cursor, selected.cursorBias)
+            )
+        handle.update(
+            properties(Some(text.text), Some(selection), target.enabled),
+            SemanticActions(
+                setSelection = Some { value -> select(text, value) },
+                setValue =
+                    if (target.readOnly || input.readOnly)
+                        None
+                    else
+                        Some { value -> replace(text, Utf8Range(0L, text.text.byteLength), value) },
+                replaceText =
+                    if (target.readOnly || input.readOnly)
+                        None
+                    else
+                        Some { range, value -> replace(text, range, value) },
+                showContextMenu =
+                    if (target.options.contextMenu.mode == TextContextMenuMode.Disabled)
+                        None
+                    else
+                        Some {
+                            if (!available(text))
+                                SemanticActionResult.Unavailable
+                            else
+                                if (!target.area.requestFocus())
+                                    SemanticActionResult.Rejected
+                                else
+                                    if (menu.show())
+                                        SemanticActionResult.Completed
+                                    else
+                                        SemanticActionResult.Rejected
+                        },
+                revealText = Some { range, _ -> reveal(text, range) }
+            )
+        )
+    }
+    private fun properties(
+        value: String?,
+        selection: Utf8Selection?,
+        enabled: Boolean
+    ): SemanticProperties {
+        val input = target.options.semantics
+        return SemanticProperties(
+            name = Some(input.name ?: target.name),
+            description = input.description,
+            automationId = input.automationId,
+            value = value,
+            selection = selection,
+            enabled = enabled && input.enabled,
+            readOnly = target.readOnly || input.readOnly,
+            hidden = input.hidden,
+            ignored = input.ignored,
+            error = input.error,
+            required = input.required,
+            invalid = input.invalid,
+            busy = input.busy,
+            live = input.live,
+            cursorAffinity =
+                if (target.editor.selection.cursorBias == MarkdownBias.Before)
+                    SemanticTextAffinity.Upstream
+                else
+                    SemanticTextAffinity.Downstream
+        )
+    }
+    private fun available(text: MdSemanticText): Boolean =
+        !closed &&
+            target.enabled &&
+            target.options.semantics.enabled &&
+            !target.options.semantics.hidden &&
+            !target.options.semantics.ignored &&
+            target.area.scope.isInputAllowed &&
+            target.editor.snapshot ===
+            text.snapshot &&
+            target.range ==
+            text.range
+    private fun valid(text: MdSemanticText, range: Utf8Range): Boolean {
+        if (range.start < 0L || range.end < range.start || range.end > text.text.byteLength)
+            return false
+        val bytes = text.text.toByteArray()
+        for (offset in [range.start, range.end])
+            if (offset < bytes.size && bytes[offset].toInt().and(192) == 128)
+                return false
+        return true
+    }
+    private fun select(text: MdSemanticText, selection: Utf8Selection): SemanticActionResult {
+        if (!available(text))
+            return SemanticActionResult.Unavailable
+        if (!valid(text, selection.range))
+            return SemanticActionResult.InvalidArgument
+        target.stopSelecting()
+        target.select(text.selection(selection.anchor, selection.cursor), true)
+        return SemanticActionResult.Completed
+    }
+    private fun replace(
+        text: MdSemanticText,
+        range: Utf8Range,
+        value: String
+    ): SemanticActionResult {
+        if (!available(text))
+            return SemanticActionResult.Unavailable
+        if (target.readOnly || target.options.semantics.readOnly)
+            return SemanticActionResult.Rejected
+        if (!valid(text, range))
+            return SemanticActionResult.InvalidArgument
+        return if (target.replace(text.selection(range.start, range.end).range, value))
+            SemanticActionResult.Completed
+        else
+            SemanticActionResult.Rejected
+    }
+    private fun reveal(text: MdSemanticText, range: Utf8Range): SemanticActionResult {
+        if (!available(text))
+            return SemanticActionResult.Unavailable
+        if (!valid(text, range))
+            return SemanticActionResult.InvalidArgument
+        val position = text.source(range.start, MarkdownBias.After)
+        val caret = target.caret(position)
+        val bounds = target.area.visibleBounds
+        if (caret != None && bounds != None) {
+            val rect = target.area.toWindow(caret!!)
+            if (rect != None && mdIntersectRect(rect!!, bounds!!) != None)
+                return SemanticActionResult.Completed
+        }
+        target.reveal(position)
+        return SemanticActionResult.Busy
+    }
+    fun scene(context: SceneContext, bounds: Rect) {
+        context.semantics(handle, bounds)
+    }
+    public override fun close() {
+        if (closed)
+            return
+        closed = true
+        content = None
+        handle.close()
+    }
+}

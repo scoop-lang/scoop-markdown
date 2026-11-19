@@ -6,12 +6,21 @@ import scoop.surface.*
 import scoop.ui.*
 import scoop.ui.markdown.*
 import scoop.window.*
+import scoop.window.accessibility.SemanticProperties
 
 private class SourceWindow(
     val editor: MarkdownEditorState,
     val path: Path,
     scope: ComponentScope
 ): Component(scope) {
+    private val options =
+        MarkdownSourceOptions(
+            lineNumbers = true,
+            interaction =
+                MarkdownInteractionOptions(
+                    semantics = SemanticProperties(name = Some("Markdown source"))
+                )
+        )
     public override fun onMount() {
         scope.resource {
             ShortcutScope(
@@ -33,7 +42,7 @@ private class SourceWindow(
             )
         }
     }
-    public override fun render(): View = markdownSourceEditor(editor)
+    public override fun render(): View = markdownSourceEditor(editor, options = options)
 }
 
 fun main(args: Array<String>) {

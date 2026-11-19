@@ -1,0 +1,24 @@
+package scoop.tests.window
+
+@Extern(name = "scoop_markdown_test_menu_observe")
+public fun nativeObserveMarkdownMenus()
+
+@Extern(name = "scoop_markdown_test_menu_prepare_format")
+public fun nativePrepareMarkdownFormatMenu(format: Int)
+
+@Extern(name = "scoop_markdown_test_menu_result")
+public fun nativeMarkdownMenuResult(): Int
+
+@Extern(name = "scoop_markdown_test_menu_close")
+public fun nativeCloseMarkdownMenus()
+
+@Extern(name = "scoop_markdown_test_context_key")
+public fun nativeMarkdownContextKey(view: Ptr<Unit>)
+
+@Extern(name = "scoop_markdown_test_control")
+public fun nativeMarkdownControl(
+    view: Ptr<Unit>,
+    bytes: Ptr<UInt8>,
+    length: Long,
+    operation: Int
+): Int

@@ -1,0 +1,233 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.platform.time.MonotonicTimeSource
+import scoop.surface.*
+import scoop.time.*
+import scoop.ui.*
+import scoop.window.*
+
+/** Both axes share visibility; the deadline runs only while an idle fade is pending. */
+internal class MdScrollbarFeedback(val target: MdTextTarget): Closeable {
+    val scope: ComponentScope get() = target.scope
+    var behavior = resolve()
+    val opacity =
+        scope.animation(
+            if (behavior.autoHide)
+                0.0
+            else
+                1.0
+        )
+    private var closed = false
+    private var available = false
+    private var shown = !behavior.autoHide
+    private var busy = false
+    private var within = false
+    private var edge = false
+    private var horizontal: Rect? = None
+    private var vertical: Rect? = None
+    private var bounds = Rect(0.0, 0.0, 0.0, 0.0)
+    private var deadline: TimeMark? = None
+    private val timer = scope.createDeadline { expire() }
+    private val probe = scope.createArea()
+    private val intent =
+        target.viewport.state.observeIntent {
+            event -> when (event) {
+                case LayoutCorrection(_) -> Unit
+                else -> if (behavior.input.revealOnScroll)
+                    wake()
+            }
+        }
+    private val pointer = target.area.scope.observePointer { _ -> refreshPointer() }
+    private val activity = target.area.scope.observeActivity { refresh() }
+    private val finished =
+        target.area.scope.addEventFinished {
+            event -> when (event) {
+                case Keyboard(val key) -> {
+                    if (key.state == ElementState.Pressed && behavior.input.revealOnKeyboard)
+                        wake()
+                }
+                else -> refresh()
+            }
+        }
+    private val preferences = scope.observeInteractionPreferences { _ -> update() }
+    private val window = scope.observeWindowActivity { _ -> refresh() }
+
+    init {
+        probe.ignoreSelf = true;
+        probe.scope.parent = Some(target.area.scope)
+    }
+
+    private fun resolve(): MdScrollbarBehavior =
+        MdScrollbarBehavior(
+            target.options.scrollbarBehavior,
+            scope.interactionPreferences,
+            target.options.reduceMotion
+        )
+    fun update() {
+        if (closed)
+            return
+        val previous = behavior
+        behavior = resolve()
+        if (!behavior.autoHide)
+            shown = true
+        if (
+            previous.autoHide !=
+                behavior.autoHide ||
+                previous.thickness !=
+                behavior.thickness ||
+                previous.input.placement !=
+                behavior.input.placement
+        )
+            scope.requestLayout()
+        refreshPointer()
+        scope.requestFrame()
+    }
+    private fun allowed(): Boolean =
+        !closed &&
+            target.enabled &&
+            target.area.scope.isInputAllowed &&
+            scope.nativeWindow.isFocused &&
+            scope.nativeWindow.isVisible &&
+            !scope.nativeWindow.isOccluded
+    private fun active(): Boolean {
+        if (!allowed())
+            return false
+        val activity = target.area.scope.activity
+        return activity.hasPress ||
+            activity.hasContact ||
+            activity.hasScrollRoute ||
+            target.viewport.state.isAnimating ||
+            (within && behavior.input.revealOnViewportHover) ||
+            (edge && behavior.input.revealOnEdgeHover)
+    }
+    fun wake() {
+        if (!allowed())
+            return
+        shown = true
+        deadline = None
+        refresh()
+    }
+    private fun refreshPointer() {
+        if (closed)
+            return
+        val point = probe.pointerPosition
+        val inside =
+            allowed() &&
+                available &&
+                target.area.scope.isHovered &&
+                when (point) {
+                    case Some(val at) -> bounds.contains(at);
+                    case None -> false
+                }
+        val near = inside && nearEdge(point!!)
+        val reveal =
+            (inside && !within && behavior.input.revealOnViewportHover) ||
+                (near && !edge && behavior.input.revealOnEdgeHover)
+        within = inside
+        edge = near
+        if (reveal)
+            wake()
+        else
+            refresh()
+    }
+    private fun nearEdge(point: Point): Boolean {
+        val thickness = behavior.edgeThickness
+        when (horizontal) {
+            case Some(val rect) -> if (
+                point.x >=
+                    rect.x &&
+                    point.x <
+                    rect.x +
+                    rect.width &&
+                    point.y >=
+                    rect.y +
+                    rect.height -
+                    thickness
+            )
+                return true
+            case None -> Unit
+        }
+        when (vertical) {
+            case Some(val rect) -> {
+                val inside =
+                    if (rect.x + rect.width / 2.0 < bounds.width / 2.0)
+                        point.x < rect.x + thickness
+                    else
+                        point.x >= rect.x + rect.width - thickness
+                if (inside && point.y >= rect.y && point.y < rect.y + rect.height)
+                    return true
+            }
+            case None -> Unit
+        }
+        return false
+    }
+    fun refresh() {
+        if (closed || !scope.isMounted)
+            return
+        val nextBusy = active()
+        if (!available)
+            shown = false
+        else
+            if (!behavior.autoHide)
+                shown = true
+        if (!available || !behavior.autoHide || nextBusy || !shown) {
+            deadline = None
+            timer.cancel()
+        } else
+            if (deadline == None || busy) {
+                val time = MonotonicTimeSource.markNow() + behavior.input.idleDelay
+                deadline = Some(time)
+                timer.schedule(time)
+            }
+        busy = nextBusy
+        behavior.animate(
+            opacity,
+            if (shown)
+                1.0
+            else
+                0.0,
+            if (shown)
+                behavior.input.fadeIn
+            else
+                behavior.input.fadeOut,
+            true
+        )
+    }
+    private fun expire() {
+        deadline = None
+        if (!active())
+            shown = false
+        refresh()
+    }
+    fun scene(context: SceneContext, horizontal: Rect?, vertical: Rect?) {
+        val size = context.size
+        val rect = Rect(0.0, 0.0, size.width, size.height)
+        if (horizontal != None || vertical != None)
+            context.place(probe, rect)
+        context.onFrameComplete {
+            frame -> if (!closed && frame.submission == FrameSubmission.Accepted) {
+                this.horizontal = horizontal
+                this.vertical = vertical
+                bounds = rect
+                available = (horizontal != None || vertical != None) && probe.visibleBounds != None
+                refreshPointer()
+            }
+        }
+    }
+    public override fun close() {
+        if (closed)
+            return
+        closed = true
+        var failure = mdCleanup(None) { timer.close() }
+        failure = mdCleanup(failure) { intent.close() }
+        failure = mdCleanup(failure) { pointer.close() }
+        failure = mdCleanup(failure) { activity.close() }
+        failure = mdCleanup(failure) { finished.close() }
+        failure = mdCleanup(failure) { preferences.close() }
+        failure = mdCleanup(failure) { window.close() }
+        failure = mdCleanup(failure) { probe.close() }
+        failure = mdCleanup(failure) { opacity.close() }
+        mdThrow(failure)
+    }
+}

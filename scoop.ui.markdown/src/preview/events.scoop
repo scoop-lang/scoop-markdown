@@ -11,6 +11,11 @@ internal fun mdPreviewEvent(
     context: RoutedEventContext,
     event: InputEvent
 ) {
+    if (host.closed || !host.scope.isMounted)
+        return
+    // Shared gesture defaults still receive the press and its threshold movement.
+    if (host.interactions.handle(context, event))
+        return
     when (host.rich) {
         case Some(val rich) -> mdRichEvent(rich, context, event)
         case None -> mdPreviewReadEvent(host, context, event)
@@ -45,7 +50,9 @@ internal fun mdPreviewReadEvent(
     if (context.phase != RoutedPhase.Default || !host.options.enabled)
         return
     when (event) {
-        case Pointer(InputPointerEvent.Button(val pointer, MouseButton.Left, val state, _)) -> {
+        case Pointer(
+            InputPointerEvent.Button(val pointer, MouseButton.Left, val state, val clicks)
+        ) -> {
             if (state == ElementState.Pressed) {
                 val point = context.localPosition ?: return
                 if (mdPreviewFoldPress(host, point)) {
@@ -60,22 +67,19 @@ internal fun mdPreviewReadEvent(
                         case Some(MdDisplayAction.Navigate(_)) -> true
                         else -> false
                     }
-                if (link && !pointer.state.modifiers.shift) {
-                    host.drag = Some(hit.position)
+                if (link && clicks < 2 && !pointer.state.modifiers.shift) {
+                    host.drag = Some(MdPreviewDrag(MarkdownSelection(hit.position, hit.position)))
                     host.pressed = Some(hit)
                     host.moved = false
                     context.consume()
                     return
                 }
-                val anchor =
-                    if (pointer.state.modifiers.shift)
-                        host.editor.selection.anchor
-                    else
-                        hit.position
-                host.editor.setSelection(MarkdownSelection(anchor, hit.position))
-                host.drag = Some(anchor)
+                val drag =
+                    mdPreviewDrag(host, point, hit, clicks, pointer.state.modifiers.shift) ?: return
+                host.editor.setSelection(drag.initial)
+                host.drag = Some(drag)
                 host.pressed = Some(hit)
-                host.moved = pointer.state.modifiers.shift
+                host.moved = pointer.state.modifiers.shift || clicks > 1
                 host.scope.requestLayout()
             } else {
                 val hit = host.pressed
@@ -90,22 +94,23 @@ internal fun mdPreviewReadEvent(
             context.consume()
         }
         case Pointer(InputPointerEvent.Moved(_)) -> {
-            val anchor = host.drag ?: return
+            val drag = host.drag ?: return
             val point = context.localPosition ?: return
             val hit = host.hitTest(point) ?: return
             host.moved = true
-            host.editor.setSelection(MarkdownSelection(anchor, hit.position))
+            host.editor.setSelection(drag.extend(host, point, hit) ?: return)
             host.scope.requestLayout()
             context.consume()
         }
-        case Pointer(InputPointerEvent.Wheel(_, _, _, _)) -> {
+        case Pointer(InputPointerEvent.Wheel(_, _, val phase, val momentum)) -> {
             host.anchor = None
             host.revealTarget = None
-            context.consumeScroll(host.style.text.fontSize) {
-                amount ->
-                val moved = host.scroll.scrollBy(Point(-amount.x, -amount.y), ScrollOrigin.User)
-                Point(-moved.x, -moved.y)
-            }
+            host.viewport.consumeScroll(
+                context,
+                host.style.text.fontSize,
+                phase = phase,
+                momentumPhase = momentum
+            )
         }
         case TextCommand(val command) -> if (host.execute(command))
             context.consume()

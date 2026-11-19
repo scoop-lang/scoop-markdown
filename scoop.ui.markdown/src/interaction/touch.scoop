@@ -1,0 +1,304 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.markdown.*
+import scoop.math.hypot
+import scoop.surface.*
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.window.*
+
+private class MdTextTap(
+    val contact: ContactState,
+    val local: Point,
+    val snapshot: MarkdownSnapshot,
+    val count: Int,
+    var selection: MarkdownSelection
+)
+
+/** Public LongPress owns the hold claim; taps use the same real contact and accepted hit. */
+internal class MdTextTouch(
+    private val target: MdTextTarget,
+    private val menu: MdTextMenu,
+    private val showHandles: () -> Unit
+): Closeable {
+    private val contacts = ArrayList<ContactId>()
+    private var candidate: MdTextTap? = None
+    private var previous: MdTextTap? = None
+    private var closed = false
+    private var moved = false
+    private var options = target.options.touch
+    private val hold =
+        target.scope.longPress(target.area, holdOptions()) {
+            sample ->
+            candidate = None
+            previous = None
+            if (allowed()) {
+                showHandles()
+                if (
+                    menu.show(Some(sample.contact.pointer), Some(sample.position), true) &&
+                        target.options.touch.hapticFeedback
+                )
+                    target.scope.nativeWindow.requestHapticFeedback()
+            }
+        }
+    private val events =
+        target.area.scope.addEventHandler {
+            context,
+            event -> when (event) {
+                case Contact(InputContactEvent.Began(val value)) -> {
+                    if (context.phase != RoutedPhase.Notification) {
+                        if (!has(value.id))
+                            contacts.add(value.id)
+                        if (contacts.size > 1L)
+                            cancel()
+                    }
+                }
+                case Contact(InputContactEvent.Cancelled(val id, _, _)) -> {
+                    forget(id)
+                    cancel()
+                }
+                case FocusChanged(false) -> cancel()
+                case Pointer(InputPointerEvent.Button(_, _, ElementState.Pressed, _)) -> cancel()
+                case Pointer(InputPointerEvent.Wheel(_, _, _, _)) -> cancel()
+                case Keyboard(_) -> cancel()
+                case TextCommand(_) -> cancel()
+                else -> Unit
+            }
+        }
+    private val finished =
+        target.area.scope.addEventFinished {
+            event -> when (event) {
+                case Contact(InputContactEvent.Ended(val value)) -> {
+                    forget(value.id)
+                    if (candidate?.contact?.id == Some(value.id))
+                        cancel()
+                }
+                case Contact(InputContactEvent.Moved(_)) -> {
+                    if (!moved)
+                        cancel()
+                    moved = false
+                }
+                else -> Unit
+            }
+        }
+    private val activity =
+        target.scope.observeWindowActivity {
+            value -> if (!value.focused || !value.visible || value.occluded)
+                cancel()
+        }
+    private val windowEvents =
+        target.scope.observeWindow(target.scope.nativeWindow) {
+            event -> when (event) {
+                case Gesture(_) -> cancel()
+                case Contact(ContactEvent.Began(val value)) -> {
+                    val point = value.pointer.logicalPosition
+                    if (!target.area.hitTest(Point(point.x, point.y)))
+                        cancel()
+                }
+                else -> Unit
+            }
+        }
+    private fun has(id: ContactId): Boolean {
+        for (value in contacts)
+            if (value == id)
+                return true
+        return false
+    }
+    private fun forget(id: ContactId) {
+        for (index in 0L ..< contacts.size)
+            if (contacts[index] == id) {
+                contacts.removeAt(index);
+                return
+            }
+    }
+    private fun holdOptions(): LongPressOptions =
+        LongPressOptions(
+            enabled =
+                target.enabled &&
+                    target.options.touch.enabled &&
+                    target.options.touch.longPressDelay !=
+                    None,
+            delay = target.options.touch.longPressDelay ?: Duration.ZERO,
+            threshold = target.options.touch.threshold
+        )
+    private fun allowed(): Boolean =
+        !closed &&
+            target.enabled &&
+            target.options.touch.enabled &&
+            target.ready() &&
+            target.area.scope.isInputAllowed &&
+            !menu.pending
+
+    fun update() {
+        if (closed)
+            return
+        val next = target.options.touch
+        if (
+            options.enabled !=
+                next.enabled ||
+                options.threshold !=
+                next.threshold ||
+                options.longPressDelay !=
+                next.longPressDelay ||
+                options.multiTap !=
+                next.multiTap ||
+                options.multiTapInterval !=
+                next.multiTapInterval
+        )
+            cancel()
+        options = next
+        hold.update(holdOptions()) {
+            sample ->
+            candidate = None
+            previous = None
+            if (allowed()) {
+                showHandles()
+                if (
+                    menu.show(Some(sample.contact.pointer), Some(sample.position), true) &&
+                        target.options.touch.hapticFeedback
+                )
+                    target.scope.nativeWindow.requestHapticFeedback()
+            }
+        }
+        if (!allowed() || !mdSameSnapshot(candidate?.snapshot, target.editor.snapshot))
+            cancelCandidate()
+    }
+    private fun count(value: ContactState, local: Point): Int {
+        val previous = previous ?: return 1
+        if (
+            !target.options.touch.multiTap ||
+                previous.contact.kind !=
+                value.kind ||
+                previous.snapshot !==
+                target.editor.snapshot ||
+                previous.selection !=
+                target.editor.selection
+        )
+            return 1
+        val interval =
+            target.options.touch.multiTapInterval ?:
+                target.scope.interactionPreferences.doubleClickInterval ?:
+                Duration.milliseconds(500L)
+        val elapsed = value.pointer.time.mark() - previous.contact.pointer.time.mark()
+        val start = previous.contact.pointer.logicalPosition
+        val end = value.pointer.logicalPosition
+        return if (
+            elapsed >=
+                Duration.ZERO &&
+                elapsed <=
+                interval &&
+                hypot(end.x - start.x, end.y - start.y) <=
+                target.options.touch.threshold &&
+                hypot(local.x - previous.local.x, local.y - previous.local.y) <=
+                target.options.touch.threshold
+        )
+            if (previous.count < 3)
+                previous.count + 1
+            else
+                3
+        else
+            1
+    }
+    private fun local(value: ContactState): Point? {
+        val p = value.pointer.logicalPosition
+        val window = Point(p.x, p.y)
+        return if (target.area.hitTest(window))
+            target.area.toLocal(window)
+        else
+            None
+    }
+    private fun sample(value: ContactState): Point? {
+        val active = candidate ?: return None
+        if (
+            !allowed() ||
+                contacts.size !=
+                1L ||
+                active.contact.id !=
+                value.id ||
+                active.snapshot !==
+                target.editor.snapshot ||
+                active.selection !=
+                target.editor.selection
+        )
+            return None
+        val a = active.contact.pointer.logicalPosition
+        val b = value.pointer.logicalPosition
+        val origin = target.area.toLocal(Point(a.x, a.y)) ?: return None
+        if (
+            hypot(b.x - a.x, b.y - a.y) >
+                target.options.touch.threshold ||
+                hypot(origin.x - active.local.x, origin.y - active.local.y) >
+                target.options.touch.threshold
+        )
+            return None
+        return local(value)
+    }
+    fun handle(context: RoutedEventContext, event: InputEvent): Boolean {
+        if (closed || context.phase != RoutedPhase.Default)
+            return false
+        when (event) {
+            case Contact(InputContactEvent.Began(val value)) -> {
+                if (allowed() && contacts.size == 1L) {
+                    val point = local(value) ?: return false
+                    val taps = count(value, point)
+                    previous = None
+                    candidate =
+                        Some(
+                            MdTextTap(
+                                value,
+                                point,
+                                target.editor.snapshot,
+                                taps,
+                                target.editor.selection
+                            )
+                        )
+                }
+            }
+            case Contact(InputContactEvent.Moved(val value)) -> {
+                moved = true
+                if (sample(value) == None)
+                    cancel()
+            }
+            case Contact(InputContactEvent.Ended(val value)) -> {
+                val tap = candidate ?: return false
+                val point = sample(value)
+                candidate = None
+                if (point == None || !target.area.requestFocus(FocusOrigin.Pointer))
+                    return false
+                hold.cancel()
+                target.stopSelecting()
+                if (target.tap(point!!, tap.count)) {
+                    context.consume()
+                    tap.selection = target.editor.selection
+                    previous = Some(tap)
+                    showHandles()
+                    return true
+                }
+            }
+            else -> Unit
+        }
+        return false
+    }
+    private fun cancelCandidate() {
+        candidate = None
+        hold.cancel()
+    }
+    fun cancel() {
+        previous = None;
+        cancelCandidate()
+    }
+    public override fun close() {
+        if (closed)
+            return
+        closed = true
+        candidate = None
+        previous = None
+        var failure = mdCleanup(None) { hold.close() }
+        failure = mdCleanup(failure) { events.close() }
+        failure = mdCleanup(failure) { finished.close() }
+        failure = mdCleanup(failure) { activity.close() }
+        failure = mdCleanup(failure) { windowEvents.close() }
+        mdThrow(failure)
+    }
+}

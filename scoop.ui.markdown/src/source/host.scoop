@@ -74,7 +74,6 @@ public class MarkdownSourceHost public constructor(
         }
     public val focus = scope.focusTarget(area, FocusOptions(visibility = FocusVisibility.Always))
     private val textCursor = MdTextCursor(scope, area)
-    internal val scrollbars = MdScrollbars(scope, scroll, active, initialStyle.text.fontSize)
     internal val blink =
         scope.createDeadline {
             if (!closed && area.isFocusActive && window.isVisible && !window.isOccluded) {
@@ -83,6 +82,8 @@ public class MarkdownSourceHost public constructor(
             }
         }
     internal val dragTimer = scope.createDeadline { mdSourceDragTick(this) }
+    internal val interactions = MdTextInteractions(MdSourceTarget(this))
+    internal val scrollbars = MdScrollbars(MdSourceTarget(this), interactions.semantics.handle)
 
     init {
         initialOptions.check()
@@ -97,7 +98,8 @@ public class MarkdownSourceHost public constructor(
                 }
             }
         area.scope.enabled = active
-        scrollbars.update(active, style.text.fontSize)
+        scrollbars.update()
+        interactions.update()
     }
 
     public val state: MarkdownEditorState get() {
@@ -245,8 +247,9 @@ public class MarkdownSourceHost public constructor(
             }
         this.folding?.revealSelection()
         area.scope.enabled = active
-        scrollbars.update(active, style.text.fontSize)
+        scrollbars.update()
         area.textInput = active && !options.readOnly
+        interactions.update()
         if (!ownsOtherComposition()) {
             val previousInput = input.inputState.revision
             if (input.synchronize())
@@ -290,6 +293,10 @@ public class MarkdownSourceHost public constructor(
             return false
         selectRegion()
         return mdSourceCommand(this, command)
+    }
+    public fun showContextMenu(): Boolean {
+        checkOpen()
+        return interactions.menu.show()
     }
     public fun hitTest(point: Point): MarkdownSourceHit? {
         checkOpen()
@@ -386,6 +393,7 @@ public class MarkdownSourceHost public constructor(
                     retire()
                 invalidate(reveal)
                 publishNative()
+                interactions.refresh()
             }
         }
     }
@@ -412,6 +420,7 @@ public class MarkdownSourceHost public constructor(
         failure = mdCleanup(failure) { dragTimer.close() }
         failure = mdCleanup(failure) { textCursor.close() }
         failure = mdCleanup(failure) { scrollbars.close() }
+        failure = mdCleanup(failure) { interactions.close() }
         failure = mdCleanup(failure) { focus.close() }
         failure = mdCleanup(failure) { area.close() }
         failure = mdCleanup(failure) { viewport.close() }
@@ -446,6 +455,7 @@ internal fun mdSourceChanged(host: MarkdownSourceHost, change: MarkdownChange) {
     if (host.closed)
         return
     host.maximumWidth = 0.0
+    host.interactions.changed()
     host.assistance.changed(change)
     host.region?.advance(change)
     val estimate = mdSourceEstimate(host.style)

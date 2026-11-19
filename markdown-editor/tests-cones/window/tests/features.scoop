@@ -1,0 +1,168 @@
+package scoop.examples.markdown.editor
+
+import scoop.markdown.*
+import scoop.test.*
+import scoop.text.repeat
+import scoop.text.startsWith
+import scoop.ui.markdown.*
+import scoop.window.*
+
+internal fun editorFeatureReady(p: EditorFeatureProbe): Boolean =
+    when (p.phase) {
+        case 8 -> p.root.headingOpen.value
+        case 9 -> !p.root.headingOpen.value
+        case 14 -> editorProbeMenuResult() >= 0
+        case 16 -> editorProbeMenuResult() >= 0
+        else -> true
+    }
+
+internal fun editorFeatureStep(p: EditorFeatureProbe, active: ActiveApplication) {
+    val root = p.root
+    val view = root.view
+    val editor = root.editor
+    when (p.phase) {
+        case 0 -> p.next {
+            p.window.requestSize(LogicalSize(860.0, 620.0))
+            p.original = "one two\n\n```text\n" + "VeryLongUnbrokenSource".repeat(200L) + "\n```\n"
+            editor.document.reset(p.original)
+            editor.markSaved(editor.snapshot.revision)
+            p.savedRevision = editor.snapshot.revision
+        }
+        case 1 -> {
+            for (name in ["markdown-heading-level", "markdown-format-粗体", "markdown-more"])
+                assertEquals(1, editorProbeControl(p, name, 3), Some(name))
+            assertEquals(0.0, view.richScroll.maximum.x)
+            p.wrappedHeight = view.richScroll.content.height
+            p.next { root.wordWrap.value = false }
+        }
+        case 2 -> {
+            assertTrue(view.richScroll.maximum.x > 0.0)
+            assertTrue(view.richScroll.content.height < p.wrappedHeight)
+            p.next { root.wordWrap.value = true }
+        }
+        case 3 -> {
+            assertEquals(0.0, view.richScroll.maximum.x)
+            assertEquals(p.savedRevision, editor.snapshot.revision)
+            assertFalse(editor.isDirty)
+            p.next { root.setMode(MarkdownEditorMode.SideBySide) }
+        }
+        case 4 -> {
+            assertEquals(1, editorProbeControl(p, "markdown-heading-level"))
+            assertEquals(0.0, view.sourceScroll.maximum.x)
+            p.next { view.requestFocus(MarkdownEditorPane.Source) }
+        }
+        case 5 -> {
+            assertEquals(MarkdownEditorPane.Source, view.activePane)
+            assertEquals(0, editorProbeControl(p, "markdown-heading-level"))
+            p.next { view.requestFocus(MarkdownEditorPane.Rich) }
+        }
+        case 6 -> {
+            assertEquals(MarkdownEditorPane.Rich, view.activePane)
+            assertEquals(1, editorProbeControl(p, "markdown-heading-level"))
+            p.next { root.setMode(MarkdownEditorMode.Wysiwyg) }
+        }
+        case 7 -> p.next { assertEquals(1, editorProbeControl(p, "markdown-heading-level", 2)) }
+        case 8 -> p.next { assertEquals(1, editorProbeControl(p, "2 级标题", 2)) }
+        case 9 -> {
+            assertTrue(editor.snapshot.toMarkdown().startsWith("## one two"))
+            assertFalse(root.headingOpen.value)
+            p.next { assertTrue(editor.undo()) }
+        }
+        case 10 -> {
+            assertEquals(p.original, editor.snapshot.toMarkdown())
+            p.next {
+                editor.setSelection(MarkdownSelection(MarkdownPosition(0L), MarkdownPosition(3L)))
+                view.requestFocus(MarkdownEditorPane.Rich)
+            }
+        }
+        case 11 -> p.next {
+            assertEquals(1, editorProbeControl(p, "markdown-format-粗体", 1))
+            assertEquals(1, editorProbeControl(p, "markdown-format-粗体", 2))
+        }
+        case 12 -> {
+            editorAssertBold(editor)
+            p.next {
+                assertTrue(editor.undo());
+                view.requestFocus(MarkdownEditorPane.Rich)
+            }
+        }
+        case 13 -> p.next { editorProbeMenu(p, 2) }
+        case 14 -> {
+            assertEquals(15, editorProbeMenuResult())
+            assertTrue(editor.snapshot.toMarkdown().startsWith("## one two"))
+            p.next {
+                assertTrue(editor.undo());
+                view.requestFocus(MarkdownEditorPane.Rich)
+            }
+        }
+        case 15 -> p.next { editorProbeMenu(p, 1) }
+        case 16 -> {
+            assertEquals(15, editorProbeMenuResult())
+            editorAssertBold(editor)
+            p.next { assertTrue(editor.undo()) }
+        }
+        case 17 -> {
+            assertEquals(p.original, editor.snapshot.toMarkdown())
+            p.next { root.setMode(MarkdownEditorMode.Source) }
+        }
+        case 18 -> {
+            assertEquals(0, editorProbeControl(p, "markdown-heading-level"))
+            assertEquals(0.0, view.sourceScroll.maximum.x)
+            p.next { root.wordWrap.value = false }
+        }
+        case 19 -> {
+            assertTrue(view.sourceScroll.maximum.x > 0.0)
+            p.next { root.wordWrap.value = true }
+        }
+        case 20 -> {
+            assertEquals(0.0, view.sourceScroll.maximum.x)
+            assertEquals(p.original, editor.snapshot.toMarkdown())
+            p.next {
+                p.original =
+                    "|" +
+                        " Title |".repeat(12L) +
+                        "\n|" +
+                        " --- |".repeat(12L) +
+                        "\n|" +
+                        (" " + "WideTableCell".repeat(10L) + " |").repeat(12L) +
+                        "\n"
+                editor.document.reset(p.original)
+                root.setMode(MarkdownEditorMode.Wysiwyg)
+            }
+        }
+        case 21 -> {
+            assertEquals(0.0, view.richScroll.maximum.x)
+            p.wrappedHeight = view.richScroll.content.height
+            p.next { root.wordWrap.value = false }
+        }
+        case 22 -> {
+            assertTrue(view.richScroll.maximum.x > 0.0)
+            assertTrue(view.richScroll.content.height < p.wrappedHeight)
+            p.next { root.wordWrap.value = true }
+        }
+        case 23 -> {
+            assertEquals(0.0, view.richScroll.maximum.x)
+            p.next { root.setMode(MarkdownEditorMode.SideBySide) }
+        }
+        case 24 -> {
+            assertEquals(0.0, view.richScroll.maximum.x)
+            assertEquals(0.0, view.sourceScroll.maximum.x)
+            assertEquals(p.original, editor.snapshot.toMarkdown())
+            p.next { editorPrepareProseWrap(p, 0) }
+        }
+        else -> editorProseWrapStep(p, active)
+    }
+}
+
+private fun editorAssertBold(editor: MarkdownEditorState) {
+    val content = editor.document.parse(MarkdownProfile.Editor).textContent(editor.selection.range)
+    assertEquals("one two", content.text.text)
+    assertEquals(
+        MarkdownStyleState.On,
+        content.styleState(MarkdownRange(0L, 3L), MarkdownInlineStyle.Strong)
+    )
+    assertEquals(
+        MarkdownStyleState.Off,
+        content.styleState(MarkdownRange(4L, 7L), MarkdownInlineStyle.Strong)
+    )
+}

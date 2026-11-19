@@ -1,0 +1,137 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.markdown.*
+import scoop.surface.*
+import scoop.ui.*
+import scoop.window.*
+
+internal class MdSourceTarget(val host: MarkdownSourceHost): MdTextTarget {
+    public override val scope: ComponentScope get() = host.scope
+    public override val area: InputArea get() = host.area
+    public override val focus: FocusTarget get() = host.focus
+    public override val editor: MarkdownEditorState get() = host.current
+    public override val options: MarkdownInteractionOptions get() = host.options.interaction
+    public override val enabled: Boolean get() = !host.closed && host.active
+    public override val readOnly: Boolean get() = host.options.readOnly
+    public override val source: Boolean get() = true
+    public override val range: MarkdownRange get() = host.sourceRange
+    public override val viewport: ScrollViewport get() = host.viewport
+    public override val axes: ScrollAxes get() =
+        if (host.options.wrap)
+            ScrollAxes.Vertical
+        else
+            ScrollAxes.Both
+    public override val name: String get() = "Markdown source"
+    public override val lineStep: Double get() = host.style.text.fontSize
+    public override val color: Color get() = host.style.text.color
+    public override fun ready(): Boolean {
+        val frame = host.accepted ?: return false
+        return !host.closed &&
+            frame.sourceRevision ==
+            editor.snapshot.revision &&
+            mdSameFolds(frame.folds, mdActiveFolds(host.folding))
+    }
+    public override fun hit(point: Point): MarkdownPosition? = host.hitTest(point)?.position
+    public override fun word(point: Point, line: Boolean): MarkdownRange? {
+        val position = hit(point) ?: return None
+        return Some(
+            if (line)
+                host.lineRange(editor.snapshot.lineAt(position), true)
+            else
+                mdSourceWord(host, position)
+        )
+    }
+    public override fun selectionBoxes(range: MarkdownRange): Array<Rect> {
+        if (!ready())
+            return []
+        val frame = host.accepted!!
+        val result = ArrayList<Rect>()
+        for (row in frame.rows) {
+            val start =
+                if (range.start > row.range.start)
+                    range.start
+                else
+                    row.range.start
+            val end =
+                if (range.end < row.range.end)
+                    range.end
+                else
+                    row.range.end
+            if (start >= end)
+                continue
+            val a = row.position(start, MarkdownBias.Before)
+            val b = row.position(end, MarkdownBias.After)
+            for (box in row.layout.selection(TextRange(a.byteOffset, b.byteOffset)))
+                result.add(
+                    Rect(
+                        box.rect.x + frame.contentX,
+                        box.rect.y + frame.padding + frame.top(row.index),
+                        box.rect.width,
+                        box.rect.height
+                    )
+                )
+        }
+        return result.toArray()
+    }
+    public override fun caret(position: MarkdownPosition): Rect? = host.caret(position)
+    public override fun select(value: MarkdownSelection, reveal: Boolean) {
+        host.perform({ editor.setSelection(value) }, reveal)
+    }
+    public override fun tap(point: Point, count: Int): Boolean {
+        if (count == 1 && mdSourceFoldPress(host, point))
+            return true
+        val at = host.hitTest(point) ?: return false
+        val selection =
+            if (count < 2)
+                MarkdownSelection(at.position, at.position)
+            else
+                mdTextSelection(word(point, count > 2) ?: return false)
+        select(selection, true)
+        host.cursorAffinity = at.affinity
+        host.preferredX = None
+        return true
+    }
+    public override fun stopSelecting() {
+        mdSourceStopDrag(host)
+    }
+    public override fun execute(command: TextEditCommand): Boolean = host.execute(command)
+    public override fun replace(range: MarkdownRange, text: String, markdown: Boolean): Boolean {
+        if (!enabled || readOnly || range.start < this.range.start || range.end > this.range.end)
+            return false
+        host.perform({ editor.replace(range, text) })
+        return true
+    }
+    public override fun export(): MdTextExport? {
+        if (!mdTextCanCopy(this))
+            return None
+        val text = editor.snapshot.read(editor.selection.range)
+        return Some(MdTextExport(text, text))
+    }
+    public override fun reveal(position: MarkdownPosition) {
+        host.folding?.reveal(position)
+        host.alignViewport(MdScrollAnchor(MarkdownAnchor(position), 0.0))
+    }
+    public override fun move(range: MarkdownRange, position: MarkdownPosition): Boolean {
+        if (
+            !enabled ||
+                readOnly ||
+                range.start <
+                this.range.start ||
+                range.end >
+                this.range.end ||
+                position.byteOffset <
+                this.range.start ||
+                position.byteOffset >
+                this.range.end
+        )
+            return false
+        val edit = mdSourceMoveSelection(editor.snapshot, range, position)
+        host.perform({ editor.apply(edit.change, edit.selection) })
+        return true
+    }
+    public override fun perform(action: () -> Unit) {
+        host.perform(action)
+    }
+}

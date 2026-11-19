@@ -7,6 +7,7 @@
 | [文档库设计](markdown/DESIGN.md) | 核心文档模型与语法、内容处理扩展 |
 | [编辑器设计](ui/markdown/DESIGN.md) | 原位源码、inline／block 展示及大文档交互 |
 | [API 导航](API-GUIDE.md) | 按任务查找公开类型与操作 |
+| [原生交互](INTERACTIONS.md) | 菜单、拖放、Touch／Pen、滚动条、回弹和无障碍的示例与验证 |
 | [实施记录](markdown/PROGRESS.md) | 已交付能力、历史验收和边界 |
 | [交互性能记录](ui/markdown/PERFORMANCE.md) | 测量口径、固定语料、命令和已测结果 |
 | [迁移记录](MIGRATION.md) | 独立仓库来源、路径调整及迁移验证 |

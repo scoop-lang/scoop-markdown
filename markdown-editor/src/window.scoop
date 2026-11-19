@@ -12,6 +12,7 @@ import scoop.ui.component.frame as editorFrame
 import scoop.ui.markdown.*
 import scoop.ui.style.*
 import scoop.window.*
+import scoop.window.accessibility.SemanticProperties
 
 internal class EditorWindow(
     internal val documents: EditorApplication,
@@ -36,6 +37,8 @@ internal class EditorWindow(
     internal val folding = scope.resource { MarkdownFoldingController(view, parser) }
     internal val outline = state(true)
     internal val formatOpen = state(false)
+    internal val headingOpen = state(false)
+    internal val wordWrap = state(true)
     internal val moreOpen = state(false)
     internal val message = state("")
     internal val target = EditorTargetDialog()
@@ -46,6 +49,15 @@ internal class EditorWindow(
     private val nativeFrame = state(WindowFrame.System(WindowContentMode.Standard))
     internal val displayPath: String get() = document.displayPath
     internal val fileName: String get() = document.name
+    internal val formattingVisible: Boolean get() =
+        view.mode ==
+            MarkdownEditorMode.Wysiwyg ||
+            (
+                view.mode ==
+                    MarkdownEditorMode.SideBySide &&
+                    view.activePane ==
+                    MarkdownEditorPane.Rich
+            )
 
     init {
         session.root = Some(this)
@@ -72,10 +84,30 @@ internal class EditorWindow(
                     color = editorInk
                 }
         )
-    private val editorOptions =
+    private val sourceInteraction =
+        MarkdownInteractionOptions(semantics = SemanticProperties(name = Some("Markdown source")))
+    private val richInteraction =
+        MarkdownInteractionOptions(
+            contextMenuItems = Some { formatContextMenu() },
+            semantics = SemanticProperties(name = Some("Markdown document"))
+        )
+    private val editorOptions: MarkdownEditorOptions get() =
         MarkdownEditorOptions(
-            source = MarkdownSourceOptions(lineNumbers = true, padding = 24.0),
-            rich = MarkdownPreviewOptions(padding = 34.0, paragraphSpacing = 12.0)
+            source =
+                MarkdownSourceOptions(
+                    wrap = wordWrap.value,
+                    lineNumbers = true,
+                    padding = 24.0,
+                    interaction = sourceInteraction
+                ),
+            rich =
+                MarkdownPreviewOptions(
+                    padding = 34.0,
+                    paragraphSpacing = 12.0,
+                    wrapLongLines = wordWrap.value,
+                    wrapProse = wordWrap.value,
+                    interaction = richInteraction
+                )
         )
 
     public override fun onMount() {

@@ -4,6 +4,7 @@ import scoop.graphics.*
 import scoop.math.max
 import scoop.math.min
 import scoop.ui.*
+import scoop.ui.component.*
 
 /** The same accepted geometry drives painting, track paging and thumb dragging. */
 internal struct MdScrollbarGeometry(
@@ -40,7 +41,10 @@ internal struct MdScrollbarGeometry(
 internal fun mdScrollbarGeometry(
     snapshot: ScrollSnapshot,
     horizontal: Boolean,
-    direction: LayoutDirection
+    direction: LayoutDirection,
+    thickness: Double = 12.0,
+    placement: ScrollbarPlacement = ScrollbarPlacement.Overlay,
+    outer: Size = snapshot.viewport
 ): MdScrollbarGeometry? {
     val width = snapshot.viewport.width
     val height = snapshot.viewport.height
@@ -59,44 +63,67 @@ internal fun mdScrollbarGeometry(
             )
     )
         return None
-    val thicknessX = min(12.0, width)
-    val thicknessY = min(12.0, height)
+    val thicknessX = min(thickness, outer.width)
+    val thicknessY = min(thickness, outer.height)
     val rtl = direction == LayoutDirection.Rtl
+    val gutter = placement == ScrollbarPlacement.Gutter
     val bounds =
-        if (horizontal)
+        if (gutter && horizontal)
             Rect(
-                if (hasY && rtl)
-                    thicknessX
+                if (rtl)
+                    outer.width - width
                 else
                     0.0,
-                height - thicknessY,
-                max(
-                    0.0,
-                    width -
-                        if (hasY)
-                            thicknessX
-                        else
-                            0.0
-                ),
+                height,
+                width,
                 thicknessY
             )
         else
-            Rect(
-                if (rtl)
-                    0.0
-                else
-                    width - thicknessX,
-                0.0,
-                thicknessX,
-                max(
+            if (gutter)
+                Rect(
+                    if (rtl)
+                        0.0
+                    else
+                        width,
                     0.0,
-                    height -
-                        if (hasX)
-                            thicknessY
-                        else
-                            0.0
+                    thicknessX,
+                    height
                 )
-            )
+            else
+                if (horizontal)
+                    Rect(
+                        if (hasY && rtl)
+                            thicknessX
+                        else
+                            0.0,
+                        height - thicknessY,
+                        max(
+                            0.0,
+                            width -
+                                if (hasY)
+                                    thicknessX
+                                else
+                                    0.0
+                        ),
+                        thicknessY
+                    )
+                else
+                    Rect(
+                        if (rtl)
+                            0.0
+                        else
+                            width - thicknessX,
+                        0.0,
+                        thicknessX,
+                        max(
+                            0.0,
+                            height -
+                                if (hasX)
+                                    thicknessY
+                                else
+                                    0.0
+                        )
+                    )
     val length =
         (
             if (horizontal)

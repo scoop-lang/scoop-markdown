@@ -32,8 +32,29 @@ public struct MarkdownPreviewOptions(
     val paragraphSpacing: Double = 10.0,
     val indent: Double = 26.0,
     val minimumColumnWidth: Double = 100.0,
-    val tabSize: Int = 4
+    val tabSize: Int = 4,
+    val interaction: MarkdownInteractionOptions = MarkdownInteractionOptions(),
+    val wrapLongLines: Boolean = false,
+    val wrapProse: Boolean = true
 ) {
+    internal fun sameLayout(other: MarkdownPreviewOptions): Boolean =
+        padding ==
+            other.padding &&
+            overscan ==
+            other.overscan &&
+            paragraphSpacing ==
+            other.paragraphSpacing &&
+            indent ==
+            other.indent &&
+            minimumColumnWidth ==
+            other.minimumColumnWidth &&
+            tabSize ==
+            other.tabSize &&
+            wrapLongLines ==
+            other.wrapLongLines &&
+            wrapProse ==
+            other.wrapProse
+
     internal fun check() {
         if (
             !padding.isFinite() ||

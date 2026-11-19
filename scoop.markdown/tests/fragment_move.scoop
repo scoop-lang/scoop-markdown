@@ -1,0 +1,69 @@
+package scoop.markdown
+
+import scoop.test.*
+import scoop.text.contains
+
+@Test
+private class MarkdownFragmentMoveTests {
+    @Test
+    fun movingFormattedUnicodeRemovesEmptyMarkersAndKeepsTheMovedStyle() {
+        val original = "A __中文__ B"
+        val document = MarkdownDocument.fromText(original)
+        val edit =
+            document.parse().moveMarkdown(
+                MarkdownRange(4L, 10L),
+                MarkdownPosition(original.byteLength)
+            )
+        assertEquals(original, document.toMarkdown())
+        edit.applyTo(document)
+        assertFalse(document.toMarkdown().contains("____"))
+        val after = document.parse()
+        val content = after.inlineContent(after.root.children[0L].id)
+        assertEquals("A  B中文", content.text.text)
+        assertEquals(
+            MarkdownStyleState.On,
+            content.styleState(
+                MarkdownRange(content.text.byteLength - 6L, content.text.byteLength),
+                MarkdownInlineStyle.Strong
+            )
+        )
+    }
+
+    @Test
+    fun backwardMovesUseOriginalCoordinatesAndInteriorDropsLeaveSourceAlone() {
+        val original = "first **last**"
+        val document = MarkdownDocument.fromText(original)
+        val parsed = document.parse()
+        for (at in [8L, 10L, 12L]) {
+            val unchanged = parsed.moveMarkdown(MarkdownRange(8L, 12L), MarkdownPosition(at))
+            assertFalse(unchanged.change.changed)
+            assertEquals(original, document.toMarkdown())
+        }
+        val moved = parsed.moveMarkdown(MarkdownRange(8L, 12L), MarkdownPosition(0L))
+        moved.applyTo(document)
+        val after = document.parse()
+        assertEquals("lastfirst ", after.inlineContent(after.root.children[0L].id).text.text)
+        assertFalse(document.toMarkdown().contains("****"))
+    }
+
+    @Test
+    fun movingAcrossBlocksPublishesOnlyTheCombinedChange() {
+        val original = "**first**\n\nsecond\n\nlast"
+        val document = MarkdownDocument.fromText(original)
+        val changes = ArrayList<MarkdownChange>()
+        val listener = document.observe { change -> changes.add(change) }
+        val edit =
+            document.parse().moveMarkdown(
+                MarkdownRange(2L, 7L),
+                MarkdownPosition(original.byteLength)
+            )
+        assertEquals(0L, changes.size)
+        edit.applyTo(document)
+        assertEquals(1L, changes.size)
+        val after = document.parse()
+        assertEquals("second", after.inlineContent(after.root.children[0L].id).text.text)
+        assertEquals("lastfirst", after.inlineContent(after.root.children[1L].id).text.text)
+        assertFalse(document.toMarkdown().contains("****"))
+        listener.close()
+    }
+}

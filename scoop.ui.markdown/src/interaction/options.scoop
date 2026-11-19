@@ -1,0 +1,32 @@
+package scoop.ui.markdown
+
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.ui.text.*
+import scoop.window.accessibility.*
+
+/** Native interactions share the existing document, accepted layout and viewport. */
+public class MarkdownInteractionOptions public constructor(
+    public val contextMenu: TextContextMenuOptions = TextContextMenuOptions(),
+    public val contextMenuItems: (() -> NativeMenuContent)? = None,
+    public val acceptDrops: Boolean = true,
+    public val drag: TextDragOptions = TextDragOptions(),
+    public val touch: TextTouchOptions = TextTouchOptions(),
+    public val touchScroll: TouchScrollOptions = TouchScrollOptions(),
+    public val scrollPhysics: ScrollPhysicsOptions = ScrollPhysicsOptions(),
+    public val scrollbarBehavior: ScrollbarBehavior = scrollbarBehavior(),
+    public val semantics: SemanticProperties = SemanticProperties(),
+    public val reduceMotion: Boolean = false
+): Equals<MarkdownInteractionOptions> {
+    public override operator fun equals(other: MarkdownInteractionOptions): Boolean = this === other
+    init {
+        if (
+            !drag.threshold.isFinite() ||
+                drag.threshold <
+                0.0 ||
+                drag.effects.link ||
+                (!drag.effects.copy && !drag.effects.move)
+        )
+            throw IllegalArgumentException(Some("Invalid Markdown text drag options"))
+    }
+}

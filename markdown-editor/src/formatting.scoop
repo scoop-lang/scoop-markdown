@@ -1,0 +1,203 @@
+package scoop.examples.markdown.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.FontSlant
+import scoop.icons.lucide.chevronDown
+import scoop.markdown.*
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.ui.markdown.*
+import scoop.ui.style.Insets
+
+internal fun EditorWindow.formattingControls(): View {
+    val owner = this
+    return row {
+        alignment = CrossAlignment.Center
+        spacing = 2.0
+        item(owner.headingMenu()) { shrink = 0.0 }
+        for (
+            entry in [
+                ("粗体", "B", MarkdownInlineStyle.Strong),
+                ("斜体", "I", MarkdownInlineStyle.Emphasis),
+                ("删除线", "S̶", MarkdownInlineStyle.Strikethrough)
+            ]
+        ) {
+            val(name, label, format) = entry
+            val status = owner.view.styleState(format)
+            item(
+                editorFormatButton(
+                    label,
+                    name,
+                    status,
+                    { owner.perform("无法应用格式") { owner.view.toggleStyle(format) } }
+                )
+            )
+        }
+        val status = owner.view.codeState()
+        item(
+            editorFormatButton(
+                "</>",
+                "行内代码",
+                status,
+                { owner.perform("无法应用格式") { owner.view.toggleCode() } }
+            )
+        )
+        item(owner.formatMenu())
+    }
+}
+
+private fun editorFormatButton(
+    label: String,
+    name: String,
+    status: MarkdownStyleState,
+    action: () -> Unit
+): View =
+    tooltip(
+        button(label, action) {
+            enabled = status != MarkdownStyleState.Unavailable
+            size = ButtonSize.IconSm
+            variant = ButtonVariant.Ghost
+            semantics =
+                ComponentSemantics(
+                    name = Some(name),
+                    automationId = Some("markdown-format-" + name)
+                )
+            style =
+                editorControlStyle(
+                    status == MarkdownStyleState.On || status == MarkdownStyleState.Mixed
+                ).copy {
+                    text {
+                        fontSize = Some(14.0)
+                        weight =
+                            Some(
+                                if (label == "B")
+                                    700
+                                else
+                                    400
+                            )
+                        slant =
+                            Some(
+                                if (label == "I")
+                                    FontSlant.Italic
+                                else
+                                    FontSlant.Upright
+                            )
+                    }
+                    surface {
+                        suggestedSize = Some(Size(30.0, 28.0));
+                        padding = Some(Insets.all(3.0))
+                    }
+                }
+        },
+        name
+    ) {
+        side = OverlaySide.Bottom
+        openDelay = Duration.milliseconds(600L)
+        arrow = None
+    }
+
+private fun EditorWindow.headingLabel(): String {
+    for (level in 1 .. 6)
+        if (view.blockState(MarkdownBlockCommand.Heading(level)) == MarkdownStyleState.On)
+            return level.toString() + " 级标题"
+    return if (view.blockState(MarkdownBlockCommand.Paragraph) == MarkdownStyleState.On)
+        "正文"
+    else
+        "段落样式"
+}
+
+private fun EditorWindow.headingMenu(): View {
+    val owner = this
+    val content =
+        menu {
+            block(owner, "正文", MarkdownBlockCommand.Paragraph)
+            for (level in 1 .. 6)
+                block(owner, level.toString() + " 级标题", MarkdownBlockCommand.Heading(level))
+        }
+    return dropdownMenu(headingOpen.binding(), content) {
+        trigger(
+            row {
+                alignment = CrossAlignment.Center
+                spacing = 5.0
+                label(owner.headingLabel())
+                icon(chevronDown) {
+                    size = 11.0;
+                    strokeWidth = 1.8
+                }
+            }
+        ) {
+            variant = ButtonVariant.Ghost
+            style = editorControlStyle()
+            semantics =
+                ComponentSemantics(
+                    name = Some("标题级别"),
+                    automationId = Some("markdown-heading-level")
+                )
+        }
+        width = 150.0
+        focus { restoreFocus = false }
+        onClosed = { _ -> owner.finishFormatMenu() }
+    }
+}
+
+internal fun EditorWindow.formatContextMenu(): NativeMenuContent {
+    val owner = this
+    return nativeMenu {
+        if (owner.formattingVisible) {
+            for (
+                entry in [
+                    ("粗体", MarkdownInlineStyle.Strong),
+                    ("斜体", MarkdownInlineStyle.Emphasis),
+                    ("删除线", MarkdownInlineStyle.Strikethrough)
+                ]
+            ) {
+                val(name, format) = entry
+                val status = owner.view.styleState(format)
+                item(
+                    ViewKey.Text("format-" + name),
+                    marked(name, status),
+                    { _ -> owner.perform("无法应用格式") { owner.view.toggleStyle(format) } }
+                ) { enabled = status != MarkdownStyleState.Unavailable }
+            }
+            val status = owner.view.codeState()
+            item(
+                ViewKey.Text("format-code"),
+                marked("行内代码", status),
+                { _ -> owner.perform("无法应用格式") { owner.view.toggleCode() } }
+            ) { enabled = status != MarkdownStyleState.Unavailable }
+            separator(ViewKey.Text("format-blocks"))
+            submenu(
+                ViewKey.Text("format-heading"),
+                "标题",
+                nativeMenu {
+                    formatBlock(owner, "正文", MarkdownBlockCommand.Paragraph)
+                    for (level in 1 .. 6)
+                        formatBlock(
+                            owner,
+                            level.toString() + " 级标题",
+                            MarkdownBlockCommand.Heading(level)
+                        )
+                }
+            )
+            formatBlock(owner, "引用", MarkdownBlockCommand.Quote)
+            formatBlock(owner, "无序列表", MarkdownBlockCommand.BulletList)
+            formatBlock(owner, "有序列表", MarkdownBlockCommand.OrderedList)
+            formatBlock(owner, "任务列表", MarkdownBlockCommand.TaskList)
+            formatBlock(owner, "代码块", MarkdownBlockCommand.CodeBlock)
+        }
+    }
+}
+
+private fun NativeMenuBuilder.formatBlock(
+    owner: EditorWindow,
+    label: String,
+    command: MarkdownBlockCommand
+) {
+    val status = owner.view.blockState(command)
+    item(
+        ViewKey.Text("format-" + label),
+        marked(label, status),
+        { _ -> owner.perform("无法应用格式") { owner.view.executeBlock(command) } }
+    ) { enabled = status != MarkdownStyleState.Unavailable }
+}

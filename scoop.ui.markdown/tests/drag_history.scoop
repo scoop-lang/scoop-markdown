@@ -1,0 +1,55 @@
+package scoop.ui.markdown
+
+import scoop.markdown.*
+import scoop.test.*
+
+@Test
+private class MarkdownDragHistoryTests {
+    @Test
+    fun sourceMovesPreserveUnicodeAndReverseSelectionAcrossOneUndo() {
+        val original = "left 中文 right"
+        for (at in [0L, original.byteLength]) {
+            val selected = MarkdownSelection(MarkdownPosition(11L), MarkdownPosition(5L))
+            val editor = MarkdownEditorState(MarkdownDocument.fromText(original), selected)
+            val edit = mdSourceMoveSelection(editor.snapshot, selected.range, MarkdownPosition(at))
+            editor.apply(edit.change, edit.selection)
+            assertEquals("中文", editor.snapshot.read(editor.selection.range))
+            assertEquals(
+                if (at == 0L)
+                    "中文left  right"
+                else
+                    "left  right中文",
+                editor.document.toMarkdown()
+            )
+            assertTrue(editor.undo())
+            assertEquals(original, editor.document.toMarkdown())
+            assertEquals(selected, editor.selection)
+            assertFalse(editor.canUndo)
+            assertTrue(editor.redo())
+            assertEquals("中文", editor.snapshot.read(editor.selection.range))
+            editor.close()
+        }
+    }
+
+    @Test
+    fun richMoveHasOnePublicationAndOneHistoryEntry() {
+        val original = "A __中文__ B"
+        val selected = MarkdownSelection(MarkdownPosition(10L), MarkdownPosition(4L))
+        val editor = MarkdownEditorState(MarkdownDocument.fromText(original), selected)
+        val edit =
+            editor.document.parse().moveMarkdown(
+                selected.range,
+                MarkdownPosition(original.byteLength)
+            )
+        editor.apply(edit.change, edit.selection)
+        val moved = editor.document.toMarkdown()
+        assertNotEquals(original, moved)
+        assertTrue(editor.undo())
+        assertEquals(original, editor.document.toMarkdown())
+        assertEquals(selected, editor.selection)
+        assertFalse(editor.canUndo)
+        assertTrue(editor.redo())
+        assertEquals(moved, editor.document.toMarkdown())
+        editor.close()
+    }
+}

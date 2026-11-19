@@ -1,0 +1,74 @@
+package scoop.examples.markdown.editor
+
+import scoop.markdown.*
+import scoop.test.*
+import scoop.text.repeat
+import scoop.ui.markdown.*
+import scoop.window.*
+
+internal fun editorPrepareProseWrap(p: EditorFeatureProbe, sample: Int) {
+    val prose = "English 中文 **formatted text** without automatic wrapping. ".repeat(90L)
+    p.original =
+        when (sample) {
+            case 0 -> prose + "  \nAn explicit hard break stays here.\n\nA second paragraph.\n"
+            case 1 -> "# " + prose + "\n"
+            case 2 -> "> " + prose + "\n"
+            case 3 -> "- " + prose + "\n"
+            else -> fail(Some("Unexpected prose sample"))
+        }
+    val root = p.root
+    root.editor.document.reset(p.original)
+    root.editor.markSaved(root.editor.snapshot.revision)
+    p.savedRevision = root.editor.snapshot.revision
+    root.wordWrap.value = true
+    root.view.setRightReadOnly(false)
+    root.setMode(MarkdownEditorMode.Wysiwyg)
+}
+
+internal fun editorProseWrapStep(p: EditorFeatureProbe, active: ActiveApplication) {
+    val sample = (p.phase - 25) / 5
+    val step = (p.phase - 25) % 5
+    val root = p.root
+    val view = root.view
+    val editor = root.editor
+    when (step) {
+        case 0 -> {
+            assertEquals(0.0, view.richScroll.maximum.x)
+            p.wrappedHeight = view.richScroll.content.height
+            p.savedSelection = Some(editor.selection)
+            p.next { root.wordWrap.value = false }
+        }
+        case 1 -> {
+            assertTrue(
+                view.richScroll.maximum.x > 0.0,
+                Some("Prose must scroll horizontally: " + sample.toString())
+            )
+            assertTrue(view.richScroll.content.height < p.wrappedHeight)
+            assertEquals(p.savedSelection, Some(editor.selection))
+            p.next { root.setMode(MarkdownEditorMode.SideBySide) }
+        }
+        case 2 -> {
+            assertTrue(view.richScroll.maximum.x > 0.0)
+            assertTrue(view.sourceScroll.maximum.x > 0.0)
+            p.next { view.setRightReadOnly(true) }
+        }
+        case 3 -> {
+            assertTrue(view.richScroll.maximum.x > 0.0)
+            assertTrue(view.sourceScroll.maximum.x > 0.0)
+            p.next { root.wordWrap.value = true }
+        }
+        case 4 -> {
+            assertEquals(0.0, view.richScroll.maximum.x)
+            assertEquals(0.0, view.sourceScroll.maximum.x)
+            assertEquals(p.original, editor.snapshot.toMarkdown())
+            assertEquals(p.savedRevision, editor.snapshot.revision)
+            assertFalse(editor.isDirty)
+            assertFalse(editor.canUndo)
+            if (sample < 3)
+                p.next { editorPrepareProseWrap(p, sample + 1) }
+            else
+                p.finish(active)
+        }
+        else -> fail(Some("Unexpected prose wrap step"))
+    }
+}

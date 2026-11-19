@@ -1,0 +1,304 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.markdown.*
+import scoop.surface.*
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.ui.text.*
+import scoop.window.*
+
+private class MdMenuSession(
+    val tree: NativeMenuTree,
+    val popup: PopupSession,
+    val editor: MarkdownEditorState,
+    val snapshot: MarkdownSnapshot,
+    val selection: MarkdownSelection,
+    val options: TextContextMenuOptions,
+    val extra: (() -> NativeMenuContent)?
+) {
+    val menu: Menu get() = tree.menu
+    var valid = true
+    var invoked = false
+    var completed = false
+    var actions: Closeable? = None
+    var completion: Closeable? = None
+}
+
+/** Native template and popup lifecycle, bound to one current Markdown selection. */
+internal class MdTextMenu(private val target: MdTextTarget): Closeable {
+    private var session: MdMenuSession? = None
+    private var closed = false
+    val pending: Boolean get() =
+        when (session) {
+            case Some(val current) -> when (current.popup.result) {
+                case Some(_) -> false
+                case None -> true
+            }
+            case None -> false
+        }
+
+    private fun allowed(): Boolean =
+        !closed &&
+            target.enabled &&
+            target.scope.isMounted &&
+            target.ready() &&
+            target.area.scope.isInputAllowed &&
+            target.scope.nativeWindow.state ==
+            WindowState.Open &&
+            !target.scope.nativeWindow.isInputBlocked
+
+    fun show(pointer: PointerState? = None, point: Point? = None, touch: Boolean = false): Boolean {
+        val options = target.options.contextMenu
+        if (!allowed() || pending || (!touch && options.mode == TextContextMenuMode.Disabled))
+            return false
+        val editor = target.editor
+        val snapshot = editor.snapshot
+        if (pointer != None && !target.area.requestFocus(FocusOrigin.Pointer))
+            return false
+        if (
+            !target.area.isFocusActive ||
+                !allowed() ||
+                target.editor !==
+                editor ||
+                editor.snapshot !==
+                snapshot
+        )
+            return false
+        val bounds = target.area.visibleBounds ?: return false
+        if (bounds.width <= 0.0 || bounds.height <= 0.0)
+            return false
+        val template =
+            target.scope.application.textContextMenuTemplate(
+                options.mode == TextContextMenuMode.PreferSystem,
+                options.labels
+            )
+        target.stopSelecting()
+        val placement =
+            when (pointer) {
+                case Some(val value) -> {
+                    val local = point ?: return false
+                    if (
+                        !target.containsSelection(local) &&
+                            options.selection !=
+                            TextContextMenuSelection.Preserve
+                    ) {
+                        val word =
+                            options.selection ==
+                                TextContextMenuSelection.SelectWord ||
+                                (
+                                    options.selection ==
+                                        TextContextMenuSelection.Platform &&
+                                        (touch || template.selectWordOutsideSelection)
+                                )
+                        val selection =
+                            if (word)
+                                mdTextSelection(target.word(local, false) ?: return false)
+                            else {
+                                val at = target.hit(local) ?: return false
+                                MarkdownSelection(at, at)
+                            }
+                        target.select(selection, false)
+                    }
+                    PopupPlacement.Pointer(value.logicalPosition)
+                }
+                case None -> {
+                    val boxes = target.selectionBoxes(editor.selection.range)
+                    val local =
+                        target.caret(editor.selection.cursor) ?:
+                            if (boxes.size > 0L)
+                                boxes[0L]
+                            else
+                                return false
+                    val rect = target.area.toWindow(local) ?: return false
+                    val anchor = mdIntersectRect(rect, bounds) ?: return false
+                    PopupPlacement.Anchor(
+                        LogicalRect(
+                            LogicalPosition(anchor.x, anchor.y),
+                            LogicalSize(anchor.width, anchor.height)
+                        )
+                    )
+                }
+            }
+        if (!allowed() || target.editor !== editor || editor.snapshot !== snapshot)
+            return false
+        if (options.mode == TextContextMenuMode.Disabled)
+            return true
+        cancel()
+        val tree =
+            NativeMenuTree(target.scope.application, mdMenuContent(target, template).snapshot())
+        val menu = tree.menu
+        try {
+            val popup = target.scope.nativeWindow.showPopup(menu, placement)
+            val current =
+                MdMenuSession(
+                    tree,
+                    popup,
+                    editor,
+                    snapshot,
+                    editor.selection,
+                    options,
+                    target.options.contextMenuItems
+                )
+            session = Some(current)
+            current.actions =
+                Some(target.scope.observeMenu(menu) { event -> activate(current, event) })
+            current.completion =
+                Some(
+                    target.scope.observePopup(popup) {
+                        result ->
+                        current.completed = true
+                        when (result) {
+                            case Selected(_) -> if (current.invoked || !current.valid)
+                                finish(current)
+                            case Cancelled(_) -> finish(current)
+                            case Failed(val error) -> {
+                                finish(current);
+                                throw error
+                            }
+                        }
+                    }
+                )
+            return true
+        } catch (error: Throwable) {
+            var failure = mdCleanup(Some(error)) { cancel() }
+            failure = mdCleanup(failure) { tree.close() }
+            mdThrow(failure)
+            return false
+        }
+    }
+
+    private fun matches(value: MdMenuSession): Boolean =
+        allowed() &&
+            value.valid &&
+            target.area.isFocusActive &&
+            target.editor ===
+            value.editor &&
+            target.editor.snapshot ===
+            value.snapshot &&
+            target.editor.selection ==
+            value.selection &&
+            target.options.contextMenu ==
+            value.options &&
+            mdSameMenuFactory(target.options.contextMenuItems, value.extra)
+
+    private fun activate(value: MdMenuSession, event: MenuActivation) {
+        if (value.invoked || !matches(value))
+            return
+        when (event.source) {
+            case Popup(val popup, val window) -> {
+                if (popup != value.popup.id || window != target.scope.nativeWindow.id)
+                    return
+            }
+            else -> return
+        }
+        value.invoked = true
+        try {
+            value.tree.activate(event)
+        } finally {
+            if (value.completed)
+                finish(value)
+        }
+    }
+
+    fun refresh() {
+        val value = session ?: return
+        if (!value.invoked && !matches(value))
+            cancel()
+    }
+    fun cancel() {
+        val value = session ?: return
+        value.valid = false
+        var failure = mdCleanup(None) { value.popup.close() }
+        failure = mdCleanup(failure) { finish(value) }
+        mdThrow(failure)
+    }
+    private fun finish(value: MdMenuSession) {
+        value.valid = false
+        when (session) {
+            case Some(val current) -> if (current === value)
+                session = None
+            case None -> Unit
+        }
+        val actions = value.actions
+        val completion = value.completion
+        value.actions = None
+        value.completion = None
+        var failure = mdCleanup(None) { actions?.close() }
+        failure = mdCleanup(failure) { completion?.close() }
+        failure = mdCleanup(failure) { value.tree.close() }
+        mdThrow(failure)
+    }
+    public override fun close() {
+        if (!closed) {
+            closed = true;
+            cancel()
+        }
+    }
+}
+
+internal fun mdMenuSupports(command: TextEditCommand, readOnly: Boolean): Boolean =
+    when (command) {
+        case Copy -> true
+        case SelectAll -> true
+        case Cut -> !readOnly
+        case Paste -> !readOnly
+        case Undo -> !readOnly
+        case Redo -> !readOnly
+        case DeleteSelection -> !readOnly
+        else -> false
+    }
+
+internal fun mdMenuAvailable(value: TextCommandAvailability, command: TextEditCommand): Boolean =
+    when (command) {
+        case Copy -> value.copy
+        case Cut -> value.cut
+        case Paste -> value.paste
+        case Undo -> value.undo
+        case Redo -> value.redo
+        case DeleteSelection -> value.deleteSelection
+        case SelectAll -> value.selectAll
+        else -> false
+    }
+
+internal fun mdMenuKey(key: KeyEvent): Boolean =
+    key.state ==
+        ElementState.Pressed &&
+        !key.synthetic &&
+        !key.isRepeat &&
+        !key.modifiers.control &&
+        !key.modifiers.alt &&
+        !key.modifiers.superKey &&
+        key.modifiers.altGraph !=
+        Some(true) &&
+        (
+            (key.logicalKey == LogicalKey.Named(NamedKey.ContextMenu) && !key.modifiers.shift) ||
+                (key.logicalKey == LogicalKey.Named(NamedKey.F10) && key.modifiers.shift)
+        )
+
+internal fun mdIntersectRect(a: Rect, b: Rect): Rect? {
+    val x =
+        if (a.x > b.x)
+            a.x
+        else
+            b.x
+    val y =
+        if (a.y > b.y)
+            a.y
+        else
+            b.y
+    val endX =
+        if (a.x + a.width < b.x + b.width)
+            a.x + a.width
+        else
+            b.x + b.width
+    val endY =
+        if (a.y + a.height < b.y + b.height)
+            a.y + a.height
+        else
+            b.y + b.height
+    return if (endX > x && endY > y)
+        Some(Rect(x, y, endX - x, endY - y))
+    else
+        None
+}

@@ -28,51 +28,67 @@ internal fun mdScenePreview(
                 Paint(style.background)
             )
         }
-        host.viewport.present(
-            context,
-            frame.scroll,
-            Some {
-                content ->
-                val viewport = frame.scrollSnapshot
-                content.place(
-                    host.area,
-                    Rect(
-                        viewport.offset.x,
-                        viewport.offset.y,
-                        viewport.viewport.width,
-                        viewport.viewport.height
-                    )
-                )
-                val selected =
-                    when ((frame.document, frame.selection)) {
-                        case(Some(val document), Some(val selection)) -> if (selection.collapsed)
-                            None
-                        else
-                            Some(MarkdownRange(selection.range.start, selection.range.end))
-                        else -> None
-                    }
-                for (row in frame.rows) {
-                    val top = frame.padding + frame.heights.prefix(row.index)
-                    if (
-                        top +
-                            row.resource.height <
-                            viewport.offset.y ||
-                            top >
-                            viewport.offset.y +
+        val direction = context.layoutDirection
+        context.withState {
+            viewportScene ->
+            val dx =
+                if (direction == LayoutDirection.Rtl)
+                    frame.metrics.size.width - frame.scrollSnapshot.viewport.width
+                else
+                    0.0
+            viewportScene.translate(dx, 0.0)
+            host.viewport.present(
+                viewportScene,
+                frame.scroll,
+                Some {
+                    content ->
+                    val viewport = frame.scrollSnapshot
+                    content.place(
+                        host.area,
+                        Rect(
+                            frame.scroll.presentationOffset.x,
+                            frame.scroll.presentationOffset.y,
+                            viewport.viewport.width,
                             viewport.viewport.height
+                        )
                     )
-                        continue
-                    content.withState {
-                        block ->
-                        block.translate(frame.contentX, top)
-                        mdPaintPreviewRow(block, row, selected, style, options, frame)
+                    val selected =
+                        when ((frame.document, frame.selection)) {
+                            case(Some(val document), Some(val selection)) -> if (
+                                selection.collapsed
+                            )
+                                None
+                            else
+                                Some(MarkdownRange(selection.range.start, selection.range.end))
+                            else -> None
+                        }
+                    for (row in frame.rows) {
+                        val top = frame.padding + frame.heights.prefix(row.index)
+                        if (
+                            top +
+                                row.resource.height <
+                                viewport.offset.y ||
+                                top >
+                                viewport.offset.y +
+                                viewport.viewport.height
+                        )
+                            continue
+                        content.withState {
+                            block ->
+                            block.translate(frame.contentX, top)
+                            mdPaintPreviewRow(block, row, selected, style, options, frame)
+                        }
+                        mdPaintPreviewFold(content, frame, row.index, top, style.text.color)
                     }
-                    mdPaintPreviewFold(content, frame, row.index, top, style.text.color)
+                    host.rich?.sceneInput(content, frame)
+                    host.interactions.scene(content, style.text.color) {
+                        position -> frame.caret(position)
+                    }
                 }
-                host.rich?.sceneInput(content, frame)
-            }
-        )
+            )
+        }
         host.scrollbars.scene(context, frame.scrollSnapshot)
+        host.interactions.semantics.scene(context, Rect(0.0, 0.0, size.width, size.height))
         context.onFrameComplete {
             completion ->
             if (
@@ -89,6 +105,7 @@ internal fun mdScenePreview(
             val old = host.accepted
             host.accepted = Some(frame)
             old?.close()
+            host.interactions.accepted()
             host.visibleImages(frame, imageLease)
             val model = frame.document ?: return@onFrameComplete
             if (frame.sourceRevision != Some(host.editor.snapshot.revision))

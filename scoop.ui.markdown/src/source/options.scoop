@@ -33,7 +33,8 @@ public struct MarkdownSourceOptions(
     val lineNumbers: Boolean = false,
     val autoIndent: Boolean = true,
     val autoPairs: Boolean = true,
-    val autoFences: Boolean = true
+    val autoFences: Boolean = true,
+    val interaction: MarkdownInteractionOptions = MarkdownInteractionOptions()
 ) {
     internal fun check() {
         if (

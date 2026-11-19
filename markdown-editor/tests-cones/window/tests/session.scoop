@@ -1,0 +1,163 @@
+package scoop.examples.markdown.editor
+
+import scoop.concurrent.multiThreadExecutor
+import scoop.platform.fs.*
+import scoop.platform.time.MonotonicTimeSource
+import scoop.test.*
+import scoop.tests.surface.*
+import scoop.tests.window.*
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.ui.style.ThemeSource
+import scoop.ui.markdown.*
+import scoop.window.*
+
+@Test
+private class EditorApplicationWindowTests {
+    @Test
+    fun openingFilesReusesOnlyUnchangedUntitledWindows() {
+        runEditorProbe(true)
+    }
+    @Test
+    fun formattingMenusToolbarAndWrappingFollowTheActivePane() {
+        runEditorProbe(false)
+    }
+}
+
+private fun runEditorProbe(reuse: Boolean) {
+    val directory = createTempDirectory(prefix = "markdown-application-test-")
+    try {
+        multiThreadExecutor {
+            workers = 1;
+            blocking { threads = 1 }
+        }.use {
+            workers -> EditorApplication(
+                workers,
+                [],
+                None,
+                Some(directory.resolve(Path.fromString("recent.json")))
+            ).use {
+                documents ->
+                val probe = EditorFeatureProbe(documents, directory, reuse)
+                try {
+                    context(ThemeSource(editorTheme())) {
+                        UiHost(
+                            onRootError = { _, error -> documents.fail(error) },
+                            onApplicationError = { error -> documents.fail(error) }
+                        ) {
+                            host, active, event ->
+                            documents.event(host, active, event)
+                            probe.event(active, event)
+                        }.use { host -> Application().run(host) }
+                    }
+                    documents.rethrowFailure()
+                    assertTrue(probe.finished)
+                } finally {
+                    probe.close()
+                }
+            }
+        }
+    } finally {
+        directory.deleteRecursively()
+    }
+}
+
+internal class EditorFeatureProbe(
+    val documents: EditorApplication,
+    val directory: Path,
+    val reuse: Boolean
+): Closeable {
+    var phase = 0
+    var finished = false
+    var pending = false
+    var beforeFrame = -1L
+    var frames: FrameProbe? = None
+    var original = ""
+    var savedRevision = 0L
+    var savedSelection: MarkdownSelection? = None
+    var wrappedHeight = 0.0
+    var first: EditorSession? = None
+    var second: EditorSession? = None
+    var empty: EditorSession? = None
+    val root: EditorWindow get() = first!!.root!!
+    val window: Window get() = first!!.window
+
+    fun event(active: ActiveApplication, event: ApplicationEvent) {
+        when (event) {
+            case Resumed -> {
+                first = Some(documents.windows[0L])
+                frames = Some(observeFrames(window))
+                window.setWindowLevel(WindowLevel.AlwaysOnTop)
+                window.requestFocus()
+                @Unsafe
+                {
+                    nativeObserveMarkdownMenus()
+                }
+                window.createDeadline {
+                    fail(
+                        Some(
+                            "Markdown application timeout at " +
+                                phase.toString() +
+                                ", windows=" +
+                                documents.windows.size.toString()
+                        )
+                    )
+                }.schedule(MonotonicTimeSource.markNow() + Duration.seconds(60L))
+            }
+            case AboutToWait -> {
+                if (!pending && ready()) {
+                    pending = true
+                    active.proxy().post {
+                        app ->
+                        pending = false
+                        if (ready()) {
+                            if (reuse)
+                                editorReuseStep(this, app)
+                            else
+                                editorFeatureStep(this, app)
+                        }
+                    }
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun ready(): Boolean {
+        if (finished || documents.windows.size == 0L)
+            return false
+        for (session in documents.windows) {
+            val owner = session.root ?: return false
+            if (owner.parser.current?.snapshot?.revision != Some(owner.editor.snapshot.revision))
+                return false
+        }
+        return reuse ||
+            (
+                window.isFocused &&
+                    !window.isOccluded &&
+                    !frames!!.snapshot().required &&
+                    frames!!.snapshot().presentations >
+                    beforeFrame &&
+                    editorFeatureReady(this)
+            )
+    }
+
+    fun next(action: () -> Unit) {
+        beforeFrame = frames!!.snapshot().presentations
+        action()
+        phase += 1
+    }
+
+    fun finish(active: ActiveApplication) {
+        finished = true
+        active.requestExit()
+    }
+
+    public override fun close() {
+        @Unsafe
+        {
+            nativeCloseMarkdownMenus()
+        }
+        frames?.close()
+    }
+}

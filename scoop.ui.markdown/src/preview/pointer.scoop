@@ -1,0 +1,67 @@
+package scoop.ui.markdown
+
+import scoop.graphics.Point
+import scoop.markdown.*
+
+internal class MdPreviewDrag(
+    val initial: MarkdownSelection,
+    val unit: MdTextDragUnit = MdTextDragUnit.Character
+) {
+    fun extend(
+        host: MarkdownPreviewHost,
+        point: Point,
+        hit: MarkdownPreviewHit
+    ): MarkdownSelection? {
+        if (unit == MdTextDragUnit.Character)
+            return Some(
+                MarkdownSelection(
+                    initial.anchor,
+                    hit.position,
+                    initial.anchorBias,
+                    MarkdownBias.Before
+                )
+            )
+        val range = MdPreviewTarget(host).word(point, unit == MdTextDragUnit.Line) ?: return None
+        return Some(
+            if (range.start < initial.range.start)
+                MarkdownSelection(
+                    MarkdownPosition(initial.range.end),
+                    MarkdownPosition(range.start)
+                )
+            else
+                MarkdownSelection(
+                    MarkdownPosition(initial.range.start),
+                    MarkdownPosition(range.end)
+                )
+        )
+    }
+}
+
+internal fun mdPreviewDrag(
+    host: MarkdownPreviewHost,
+    point: Point,
+    hit: MarkdownPreviewHit,
+    clicks: Int,
+    shift: Boolean
+): MdPreviewDrag? {
+    val unit = mdTextDragUnit(clicks, shift)
+    val selection =
+        if (unit == MdTextDragUnit.Character)
+            MarkdownSelection(
+                if (shift)
+                    host.editor.selection.anchor
+                else
+                    hit.position,
+                hit.position,
+                if (shift)
+                    host.editor.selection.anchorBias
+                else
+                    MarkdownBias.Before,
+                MarkdownBias.Before
+            )
+        else
+            mdTextSelection(
+                MdPreviewTarget(host).word(point, unit == MdTextDragUnit.Line) ?: return None
+            )
+    return Some(MdPreviewDrag(selection, unit))
+}

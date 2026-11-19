@@ -1,6 +1,7 @@
 package scoop.ui.markdown
 
 import scoop.graphics.*
+import scoop.graphics.text.TextAffinity
 import scoop.markdown.*
 import scoop.surface.*
 import scoop.window.*
@@ -56,7 +57,9 @@ internal fun mdRichEvent(host: MarkdownRichHost, context: RoutedEventContext, ev
                 if (host.execute(command))
                     context.consume()
         }
-        case Pointer(InputPointerEvent.Button(val pointer, MouseButton.Left, val state, _)) -> {
+        case Pointer(
+            InputPointerEvent.Button(val pointer, MouseButton.Left, val state, val clicks)
+        ) -> {
             if (state == ElementState.Pressed) {
                 val point = context.localPosition ?: return
                 if (mdPreviewFoldPress(host.preview, point)) {
@@ -66,10 +69,11 @@ internal fun mdRichEvent(host: MarkdownRichHost, context: RoutedEventContext, ev
                 val hit = host.hitTest(point) ?: return
                 host.deferSourceActivation = true
                 host.area.requestFocus(FocusOrigin.Pointer)
-                if (!pointer.state.modifiers.shift) {
+                if (clicks < 2 && !pointer.state.modifiers.shift) {
                     when (hit.action) {
                         case Some(MdDisplayAction.Navigate(_)) -> {
-                            host.preview.drag = Some(hit.position)
+                            host.preview.drag =
+                                Some(MdPreviewDrag(MarkdownSelection(hit.position, hit.position)))
                             host.preview.pressed = Some(hit)
                             host.preview.moved = false
                             context.consume()
@@ -78,29 +82,25 @@ internal fun mdRichEvent(host: MarkdownRichHost, context: RoutedEventContext, ev
                         else -> Unit
                     }
                 }
-                val anchor =
-                    if (pointer.state.modifiers.shift)
-                        host.editor.selection.anchor
+                val drag =
+                    mdPreviewDrag(
+                        host.preview,
+                        point,
+                        hit,
+                        clicks,
+                        pointer.state.modifiers.shift
+                    ) ?:
+                        return
+                host.perform { host.editor.setSelection(drag.initial) }
+                host.cursorAffinity =
+                    if (drag.unit == MdTextDragUnit.Character)
+                        hit.affinity
                     else
-                        hit.position
-                host.perform {
-                    host.editor.setSelection(
-                        MarkdownSelection(
-                            anchor,
-                            hit.position,
-                            if (pointer.state.modifiers.shift)
-                                host.editor.selection.anchorBias
-                            else
-                                MarkdownBias.Before,
-                            MarkdownBias.Before
-                        )
-                    )
-                }
-                host.cursorAffinity = hit.affinity
+                        TextAffinity.Upstream
                 host.preferredX = None
-                host.preview.drag = Some(anchor)
+                host.preview.drag = Some(drag)
                 host.preview.pressed = Some(hit)
-                host.preview.moved = pointer.state.modifiers.shift
+                host.preview.moved = pointer.state.modifiers.shift || clicks > 1
             } else {
                 host.deferSourceActivation = false
                 val hit = host.preview.pressed
@@ -132,21 +132,17 @@ internal fun mdRichEvent(host: MarkdownRichHost, context: RoutedEventContext, ev
             context.consume()
         }
         case Pointer(InputPointerEvent.Moved(_)) -> {
-            val anchor = host.preview.drag ?: return
+            val drag = host.preview.drag ?: return
             val point = context.localPosition ?: return
             val hit = host.hitTest(point) ?: return
+            val selection = drag.extend(host.preview, point, hit) ?: return
             host.preview.moved = true
-            host.perform {
-                host.editor.setSelection(
-                    MarkdownSelection(
-                        anchor,
-                        hit.position,
-                        MarkdownBias.Before,
-                        MarkdownBias.Before
-                    )
-                )
-            }
-            host.cursorAffinity = hit.affinity
+            host.perform { host.editor.setSelection(selection) }
+            host.cursorAffinity =
+                if (drag.unit == MdTextDragUnit.Character)
+                    hit.affinity
+                else
+                    TextAffinity.Upstream
             context.consume()
         }
         case Pointer(InputPointerEvent.Wheel(_, _, _, _)) -> mdPreviewReadEvent(
@@ -158,7 +154,7 @@ internal fun mdRichEvent(host: MarkdownRichHost, context: RoutedEventContext, ev
     }
 }
 
-private fun mdRichSourceHit(host: MarkdownRichHost, hit: MarkdownPreviewHit) {
+internal fun mdRichSourceHit(host: MarkdownRichHost, hit: MarkdownPreviewHit) {
     val snapshot = hit.presentation?.changes?.snapshot ?: hit.document.snapshot
     if (snapshot !== host.editor.snapshot)
         return

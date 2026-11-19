@@ -1,0 +1,235 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.markdown.*
+import scoop.surface.*
+import scoop.ui.*
+import scoop.window.*
+
+/** Endpoint targets are placed in the text scene, so scrolling and clipping stay shared. */
+internal class MdTextHandles(private val target: MdTextTarget): Closeable {
+    private var visible = false
+    private val anchor = MdTextHandle(target, true, { visible })
+    private val cursor = MdTextHandle(target, false, { visible })
+    fun show() {
+        visible = true
+        if (target.scope.isMounted)
+            target.scope.requestFrame()
+    }
+    fun hide() {
+        if (!visible)
+            return
+        visible = false
+        anchor.cancel()
+        cursor.cancel()
+        if (target.scope.isMounted)
+            target.scope.requestFrame()
+    }
+    fun update() {
+        if (
+            !target.enabled ||
+                !target.options.touch.enabled ||
+                !target.options.touch.selectionHandles.enabled
+        )
+            hide()
+        anchor.update()
+        cursor.update()
+    }
+    fun scene(context: SceneContext, color: Color, caret: (MarkdownPosition) -> Rect?) {
+        if (!visible || !target.ready() || !target.area.isFocusActive)
+            return
+        if (!target.editor.selection.collapsed)
+            anchor.scene(context, color, caret)
+        cursor.scene(context, color, caret)
+    }
+    public override fun close() {
+        var failure = mdCleanup(None) { anchor.close() }
+        failure = mdCleanup(failure) { cursor.close() }
+        mdThrow(failure)
+    }
+}
+
+private class MdTextHandle(
+    private val target: MdTextTarget,
+    private val first: Boolean,
+    private val visible: () -> Boolean
+): Closeable {
+    private var closed = false
+    private var fixed: MarkdownPosition? = None
+    private var snapshot: MarkdownSnapshot? = None
+    private var caretOnly = false
+    private var active: DragAxis? = None
+    private var offset = Point(0.0, 0.0)
+    private var bounds: Rect? = None
+    private val area = target.scope.createArea()
+    // Wait for movement on either axis so the enlarged handle target still admits repeated taps.
+    private val horizontal = createDrag(DragAxis.Horizontal)
+    private val vertical = createDrag(DragAxis.Vertical)
+    private fun createDrag(axis: DragAxis): Drag =
+        target.scope.drag(
+            area,
+            options(axis),
+            { _ -> visible() && bounds != None && target.ready() }
+        ) { event -> dragged(axis, event) }
+    init {
+        area.scope.parent = Some(target.area.scope)
+    }
+    private fun options(axis: DragAxis): DragOptions =
+        DragOptions(
+            axis,
+            threshold = target.options.touch.threshold,
+            enabled =
+                target.enabled &&
+                    target.options.touch.enabled &&
+                    target.options.touch.selectionHandles.enabled,
+            mouse = false
+        )
+    fun update() {
+        horizontal.update(
+            options(DragAxis.Horizontal),
+            { _ -> visible() && bounds != None && target.ready() }
+        ) { event -> dragged(DragAxis.Horizontal, event) }
+        vertical.update(
+            options(DragAxis.Vertical),
+            { _ -> visible() && bounds != None && target.ready() }
+        ) { event -> dragged(DragAxis.Vertical, event) }
+        when (snapshot) {
+            case Some(_) -> if (!sameSnapshot())
+                cancel()
+            case None -> Unit
+        }
+    }
+    private fun sameSnapshot(): Boolean =
+        when (snapshot) {
+            case Some(val value) -> value === target.editor.snapshot
+            case None -> false
+        }
+    fun scene(context: SceneContext, color: Color, locate: (MarkdownPosition) -> Rect?) {
+        val selected = target.editor.selection
+        val caret =
+            locate(
+                if (first)
+                    selected.anchor
+                else
+                    selected.cursor
+            ) ?:
+                return
+        val options = target.options.touch.selectionHandles
+        val center =
+            Point(
+                caret.x + caret.width / 2.0,
+                if (first)
+                    caret.y - options.radius
+                else
+                    caret.y + caret.height + options.radius
+            )
+        val hit =
+            Rect(
+                center.x - options.hitRadius,
+                center.y - options.hitRadius,
+                options.hitRadius * 2.0,
+                options.hitRadius * 2.0
+            )
+        context.place(area, hit)
+        context.draw {
+            paint ->
+            paint.canvas.drawRect(caret, Paint(options.color ?: color))
+            paint.canvas.drawRoundRect(
+                Rect(
+                    center.x - options.radius,
+                    center.y - options.radius,
+                    options.radius * 2.0,
+                    options.radius * 2.0
+                ),
+                options.radius,
+                options.radius,
+                Paint(options.color ?: color)
+            )
+        }
+        context.onFrameComplete {
+            frame -> if (!closed && frame.submission == FrameSubmission.Accepted)
+                bounds = Some(hit)
+        }
+    }
+    private fun dragged(axis: DragAxis, event: DragEvent) {
+        when (event) {
+            case Started(val sample) -> {
+                if (!target.ready())
+                    return
+                active = Some(axis)
+                val selection = target.editor.selection
+                caretOnly = selection.collapsed
+                val moving =
+                    if (first)
+                        selection.anchor
+                    else
+                        selection.cursor
+                fixed =
+                    Some(
+                        if (first)
+                            selection.cursor
+                        else
+                            selection.anchor
+                    )
+                snapshot = Some(target.editor.snapshot)
+                val caret = target.caret(moving) ?: return
+                val point = documentPoint(sample.start) ?: return
+                offset = Point(caret.x - point.x, caret.y + caret.height / 2.0 - point.y)
+                target.stopSelecting()
+                move(sample.position)
+            }
+            case Moved(val sample) -> if (active == Some(axis))
+                move(sample.position)
+            case Ended(val sample) -> if (active == Some(axis)) {
+                move(sample.position);
+                fixed = None;
+                snapshot = None;
+                active = None
+            }
+            case Cancelled(_, _) -> if (active == Some(axis)) {
+                fixed = None;
+                snapshot = None;
+                active = None
+            }
+        }
+    }
+    private fun documentPoint(point: Point): Point? {
+        val window = area.toWindow(Rect(point.x, point.y, 0.0, 0.0)) ?: return None
+        return target.area.toLocal(Point(window.x, window.y))
+    }
+    private fun move(point: Point) {
+        val fixed = fixed ?: return
+        if (!sameSnapshot() || !target.ready()) {
+            cancel();
+            return
+        }
+        val local = documentPoint(point) ?: return
+        val at = target.hit(Point(local.x + offset.x, local.y + offset.y)) ?: return
+        target.select(
+            if (caretOnly)
+                MarkdownSelection(at, at)
+            else
+                if (first)
+                    MarkdownSelection(at, fixed)
+                else
+                    MarkdownSelection(fixed, at),
+            true
+        )
+    }
+    fun cancel() {
+        fixed = None;
+        snapshot = None;
+        active = None;
+        horizontal.cancel()
+        vertical.cancel()
+    }
+    public override fun close() {
+        if (closed)
+            return
+        closed = true
+        var failure = mdCleanup(None) { horizontal.close() }
+        failure = mdCleanup(failure) { vertical.close() }
+        failure = mdCleanup(failure) { area.close() }
+        mdThrow(failure)
+    }
+}

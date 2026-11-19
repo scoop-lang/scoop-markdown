@@ -1,0 +1,158 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.markdown.*
+import scoop.surface.*
+import scoop.ui.*
+import scoop.window.*
+
+internal class MdTextInteractions(val target: MdTextTarget): Closeable {
+    private var closed = false
+    val menu = MdTextMenu(target)
+    private val handles = MdTextHandles(target)
+    private val drag = MdTextDrag(target)
+    private val drop = MdTextDrop(target)
+    private val pan =
+        target.scope.scrollPan(target.area, target.viewport, target.axes, options = panOptions())
+    private val touch = MdTextTouch(target, menu, { handles.show() })
+    val semantics = MdTextSemantics(target, menu)
+    private var editor = target.editor
+    private val scrollIntent =
+        target.viewport.state.observeIntent {
+            intent -> when (intent) {
+                case User(_) -> {
+                    drag.cancel()
+                    touch.cancel()
+                    val host = target
+                    if (host is MdSourceTarget) {
+                        host.host.revealNeeded = false
+                        host.host.anchor = None
+                    }
+                    if (host is MdPreviewTarget) {
+                        host.host.revealTarget = None
+                        host.host.anchor = None
+                    }
+                }
+                else -> Unit
+            }
+        }
+    private val activity =
+        target.scope.observeWindowActivity {
+            value -> if (!value.focused || !value.visible || value.occluded) {
+                menu.cancel()
+                handles.hide()
+            }
+        }
+    private fun panOptions(): TouchScrollOptions {
+        val value = target.options.touchScroll
+        return if (target.enabled)
+            value
+        else
+            TouchScrollOptions(false, value.threshold, value.lockAxis, value.claimAtBoundary)
+    }
+    fun update() {
+        if (closed)
+            return
+        if (editor !== target.editor || !target.enabled) {
+            menu.cancel()
+            touch.cancel()
+            handles.hide()
+            drag.cancel()
+        }
+        editor = target.editor
+        target.viewport.physics = target.options.scrollPhysics
+        target.viewport.reduceMotion = target.options.reduceMotion
+        pan.update(target.axes, ScrollChain.Chain, panOptions())
+        drag.update()
+        drop.update()
+        touch.update()
+        handles.update()
+        refresh()
+    }
+    fun changed() {
+        if (closed)
+            return
+        menu.cancel()
+        touch.cancel()
+        handles.hide()
+        drag.cancel()
+        refresh()
+    }
+    fun refresh() {
+        if (closed || !target.scope.isMounted || target.area.isClosed)
+            return
+        target.area.scope.textCommandAvailability = Some(mdTextAvailability(target))
+        menu.refresh()
+        semantics.update()
+    }
+    fun accepted() {
+        if (closed)
+            return
+        drop.accepted()
+        refresh()
+    }
+    fun handle(context: RoutedEventContext, event: InputEvent): Boolean {
+        if (closed)
+            return false
+        if (context.phase == RoutedPhase.Notification) {
+            drag.handle(context, event)
+            when (event) {
+                case FocusChanged(false) -> {
+                    menu.cancel();
+                    handles.hide()
+                }
+                else -> Unit
+            }
+            return false
+        }
+        if (context.phase != RoutedPhase.Default || !target.enabled)
+            return false
+        when (event) {
+            case Pointer(
+                InputPointerEvent.Button(val pointer, val button, ElementState.Pressed, _)
+            ) -> {
+                handles.hide()
+                if (isContextMenuClick(button, pointer.state.modifiers)) {
+                    val handled = menu.show(Some(pointer.state), context.localPosition)
+                    if (handled)
+                        context.consume()
+                    return handled
+                }
+            }
+            case Keyboard(val key) -> {
+                handles.hide()
+                if (mdMenuKey(key)) {
+                    val handled = menu.show()
+                    if (handled)
+                        context.consume()
+                    return handled
+                }
+            }
+            else -> Unit
+        }
+        if (drag.handle(context, event))
+            return true
+        return touch.handle(context, event)
+    }
+    fun scene(context: SceneContext, color: Color, caret: (MarkdownPosition) -> Rect?) {
+        drop.scene(context, color, caret)
+        handles.scene(context, color, caret)
+    }
+    public override fun close() {
+        if (closed)
+            return
+        closed = true
+        var failure = mdCleanup(None) { menu.close() }
+        failure = mdCleanup(failure) { touch.close() }
+        failure = mdCleanup(failure) { handles.close() }
+        failure = mdCleanup(failure) { drag.close() }
+        failure = mdCleanup(failure) { drop.close() }
+        failure = mdCleanup(failure) { pan.close() }
+        failure = mdCleanup(failure) { semantics.close() }
+        failure = mdCleanup(failure) { scrollIntent.close() }
+        failure = mdCleanup(failure) { activity.close() }
+        if (!target.area.isClosed)
+            target.area.scope.textCommandAvailability = None
+        mdThrow(failure)
+    }
+}

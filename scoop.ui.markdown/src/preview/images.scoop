@@ -3,6 +3,7 @@ package scoop.ui.markdown
 import scoop.graphics.*
 import scoop.markdown.*
 import scoop.math.max
+import scoop.math.min
 
 internal class MdPreviewImageEntry(
     val cell: Long,
@@ -67,14 +68,34 @@ internal fun mdPreviewColumnWidth(
     width: Double,
     options: MarkdownPreviewOptions
 ): Double {
-    val available = max(40.0, width - row.indent.toDouble() * options.indent)
-    return when (row.kind) {
-        case MdDisplayKind.Table(_, _) -> max(
-            options.minimumColumnWidth,
-            available / row.cells.size.toDouble()
+    val available =
+        max(
+            if (options.wrapLongLines)
+                1.0
+            else
+                40.0,
+            width - mdPreviewIndent(row, width, options)
         )
+    return when (row.kind) {
+        case MdDisplayKind.Table(_, _) ->
+        if (options.wrapLongLines)
+            available / row.cells.size.toDouble()
+        else
+            max(options.minimumColumnWidth, available / row.cells.size.toDouble())
         else -> available
     }
+}
+
+internal fun mdPreviewIndent(
+    row: MdDisplayRow,
+    width: Double,
+    options: MarkdownPreviewOptions
+): Double {
+    val indent = row.indent.toDouble() * options.indent
+    return if (options.wrapLongLines)
+        min(indent, max(0.0, width - 40.0))
+    else
+        indent
 }
 
 internal fun mdPreviewImages(

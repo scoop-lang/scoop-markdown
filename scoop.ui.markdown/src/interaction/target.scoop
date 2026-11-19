@@ -1,0 +1,80 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.markdown.*
+import scoop.surface.*
+import scoop.ui.*
+import scoop.window.*
+
+/** Adapts the two actual layout hosts; rich editing borrows the preview target. */
+internal interface MdTextTarget {
+    val scope: ComponentScope
+    val area: InputArea
+    val focus: FocusTarget
+    val editor: MarkdownEditorState
+    val options: MarkdownInteractionOptions
+    val enabled: Boolean
+    val readOnly: Boolean
+    val source: Boolean
+    val range: MarkdownRange
+    val viewport: ScrollViewport
+    val axes: ScrollAxes
+    val name: String
+    val lineStep: Double
+    val color: Color
+    fun ready(): Boolean
+    fun hit(point: Point): MarkdownPosition?
+    fun word(point: Point, line: Boolean): MarkdownRange?
+    fun selectionBoxes(range: MarkdownRange): Array<Rect>
+    fun caret(position: MarkdownPosition): Rect?
+    fun select(value: MarkdownSelection, reveal: Boolean)
+    fun tap(point: Point, count: Int): Boolean
+    fun stopSelecting()
+    fun execute(command: TextEditCommand): Boolean
+    fun replace(range: MarkdownRange, text: String, markdown: Boolean): Boolean
+    fun move(range: MarkdownRange, position: MarkdownPosition): Boolean
+    fun export(): MdTextExport?
+    fun reveal(position: MarkdownPosition)
+    fun perform(action: () -> Unit)
+}
+
+internal struct MdTextExport(val plain: String, val markdown: String)
+
+internal fun MdTextTarget.replace(range: MarkdownRange, text: String): Boolean =
+    replace(range, text, false)
+
+internal fun mdSameSnapshot(value: MarkdownSnapshot?, snapshot: MarkdownSnapshot): Boolean =
+    when (value) {
+        case Some(val current) -> current === snapshot
+        case None -> false
+    }
+
+internal fun MdTextTarget.containsSelection(point: Point): Boolean {
+    if (editor.selection.collapsed)
+        return false
+    for (box in selectionBoxes(editor.selection.range))
+        if (box.contains(point))
+            return true
+    return false
+}
+
+internal fun mdTextSelection(range: MarkdownRange): MarkdownSelection =
+    MarkdownSelection(MarkdownPosition(range.start), MarkdownPosition(range.end))
+
+internal fun mdTextCanCopy(target: MdTextTarget): Boolean =
+    target.enabled && target.ready() && !target.editor.selection.collapsed
+
+internal fun mdTextAvailability(target: MdTextTarget): TextCommandAvailability {
+    val enabled = target.enabled && target.ready()
+    val writable = enabled && !target.readOnly
+    val selected = enabled && !target.editor.selection.collapsed
+    return TextCommandAvailability(
+        undo = writable && target.editor.canUndo,
+        redo = writable && target.editor.canRedo,
+        cut = writable && selected,
+        copy = selected,
+        paste = writable,
+        deleteSelection = writable && selected,
+        selectAll = enabled
+    )
+}

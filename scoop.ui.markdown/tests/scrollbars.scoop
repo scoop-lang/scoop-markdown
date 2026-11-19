@@ -3,9 +3,75 @@ package scoop.ui.markdown
 import scoop.graphics.*
 import scoop.test.*
 import scoop.ui.*
+import scoop.ui.component.*
+import scoop.window.InteractionPreferences
 
 @Test
 private class MarkdownScrollbarTests {
+    @Test
+    fun systemPreferencesAndExplicitBehaviorResolveTogether() {
+        val system =
+            MdScrollbarBehavior(
+                scrollbarBehavior(),
+                InteractionPreferences(autoHideScrollbars = Some(true)),
+                false
+            )
+        assertTrue(system.autoHide)
+        assertTrue(system.idleWidth < system.hoverWidth)
+        assertFalse(system.showTrack)
+        val fixed =
+            MdScrollbarBehavior(
+                scrollbarBehavior { preset = ScrollbarPreset.Static },
+                InteractionPreferences(
+                    autoHideScrollbars = Some(true),
+                    reduceMotion = Some(true),
+                    reduceTransparency = Some(true)
+                ),
+                false
+            )
+        assertFalse(fixed.autoHide)
+        assertEquals(fixed.idleWidth, fixed.hoverWidth)
+        assertTrue(fixed.reducedMotion)
+        assertEquals(1.0, fixed.idleOpacity)
+        assertTrue(fixed.showTrack)
+    }
+
+    @Test
+    fun gutterReservationIsStableAndPlacesRtlControlsOutsideText() {
+        val behavior =
+            MdScrollbarBehavior(
+                scrollbarBehavior { placement = ScrollbarPlacement.Gutter },
+                InteractionPreferences(),
+                false
+            )
+        val outer = Size(300.0, 200.0)
+        val body = behavior.viewport(outer, ScrollAxes.Both, LayoutDirection.Rtl)
+        assertEquals(Rect(12.0, 0.0, 288.0, 188.0), body)
+        val snapshot =
+            ScrollSnapshot(Point(0.0, 0.0), Size(body.width, body.height), Size(1000.0, 1000.0))
+        val y =
+            mdScrollbarGeometry(
+                snapshot,
+                false,
+                LayoutDirection.Rtl,
+                behavior.thickness,
+                ScrollbarPlacement.Gutter,
+                outer
+            )!!
+        val x =
+            mdScrollbarGeometry(
+                snapshot,
+                true,
+                LayoutDirection.Rtl,
+                behavior.thickness,
+                ScrollbarPlacement.Gutter,
+                outer
+            )!!
+        assertEquals(body.x, y.bounds.x + y.bounds.width)
+        assertEquals(body.y + body.height, x.bounds.y)
+        assertEquals(body.x, x.bounds.x)
+        assertEquals(body.width, x.bounds.width)
+    }
     @Test
     fun hidesAxesWithoutOverflowAndEmptyViewports() {
         val fitted = ScrollSnapshot(Point(0.0, 0.0), Size(300.0, 200.0), Size(300.0, 160.0))

@@ -1,0 +1,194 @@
+package scoop.ui.markdown
+
+import scoop.markdown.*
+
+private class MdSemanticCell(
+    val row: Long,
+    val column: Long,
+    val start: Long,
+    val text: MdDisplayText
+)
+
+/** Plain semantic text keeps the projection's exact bidirectional source mapping. */
+internal class MdSemanticText private constructor(
+    val snapshot: MarkdownSnapshot,
+    val range: MarkdownRange,
+    val text: String,
+    private val model: MarkdownParsedDocument?,
+    private val presentation: MdRichPresentation?,
+    private val cells: Array<MdSemanticCell>
+) {
+    fun matches(target: MdTextTarget): Boolean {
+        if (snapshot !== target.editor.snapshot || range != target.range)
+            return false
+        if (target.source)
+            return when (model) {
+                case None -> true;
+                case Some(_) -> false
+            }
+        if (!(target is MdPreviewTarget))
+            return false
+        val frame = target.host.currentFrame() ?: return false
+        return when ((model, frame.document)) {
+            case(Some(val a), Some(val b)) -> a ===
+                b &&
+                mdSamePresentation(presentation, frame.presentation)
+            else -> false
+        }
+    }
+    fun source(offset: Long, bias: MarkdownBias): MarkdownPosition {
+        if (offset < 0L || offset > text.byteLength)
+            throw IllegalArgumentException(Some("Semantic Markdown position is outside the text"))
+        val model = model ?: return MarkdownPosition(range.start + offset)
+        if (cells.size == 0L)
+            return MarkdownPosition(range.start)
+        var low = 0L
+        var high = cells.size
+        while (low < high) {
+            val middle = low + (high - low) / 2L
+            if (cells[middle].start <= offset)
+                low = middle + 1L
+            else
+                high = middle
+        }
+        val cell =
+            cells[
+                if (low > 0L)
+                    low - 1L
+                else
+                    0L
+            ]
+        val local =
+            if (offset < cell.start)
+                0L
+            else
+                if (offset > cell.start + cell.text.text.byteLength)
+                    cell.text.text.byteLength
+                else
+                    offset - cell.start
+        val edgeBias =
+            if (local == 0L)
+                MarkdownBias.After
+            else
+                if (local == cell.text.text.byteLength)
+                    MarkdownBias.Before
+                else
+                    bias
+        return mdFrameCellOriginal(
+            model,
+            presentation,
+            cell.row,
+            cell.column,
+            cell.text.sourceAt(local, edgeBias),
+            edgeBias
+        )
+    }
+    fun selection(anchor: Long, cursor: Long): MarkdownSelection {
+        val forward = anchor <= cursor
+        val first =
+            source(
+                anchor,
+                if (forward)
+                    MarkdownBias.After
+                else
+                    MarkdownBias.Before
+            )
+        val last =
+            if (anchor == cursor)
+                first
+            else
+                source(
+                    cursor,
+                    if (forward)
+                        MarkdownBias.Before
+                    else
+                        MarkdownBias.After
+                )
+        return MarkdownSelection(first, last)
+    }
+    fun offset(position: MarkdownPosition, bias: MarkdownBias): Long {
+        val model =
+            model ?:
+                return if (position.byteOffset < range.start)
+                    0L
+                else
+                    if (position.byteOffset > range.end)
+                        range.byteLength
+                    else
+                        position.byteOffset - range.start
+        if (cells.size == 0L)
+            return 0L
+        val row = mdFrameRowAt(model, presentation, position, bias)
+        val column = mdFrameColumn(model, presentation, row, position, bias)
+        var low = 0L
+        var high = cells.size
+        while (low < high) {
+            val middle = low + (high - low) / 2L
+            val cell = cells[middle]
+            if (cell.row < row || (cell.row == row && cell.column < column))
+                low = middle + 1L
+            else
+                high = middle
+        }
+        if (low < cells.size && cells[low].row == row && cells[low].column == column) {
+            val cell = cells[low]
+            val source = mdFrameCellPosition(model, presentation, row, column, position, bias)
+            return cell.start + cell.text.textAt(source.byteOffset, bias)
+        }
+        return if (position.byteOffset <= range.start)
+            0L
+        else
+            text.byteLength
+    }
+    companion object {
+        fun create(target: MdTextTarget): MdSemanticText? {
+            val snapshot = target.editor.snapshot
+            val range = target.range
+            if (target.source)
+                return Some(forSource(snapshot, range))
+            if (!(target is MdPreviewTarget))
+                return None
+            val frame = target.host.currentFrame() ?: return None
+            val model = frame.document ?: return None
+            return Some(forPreview(snapshot, range, model, frame.presentation))
+        }
+        fun forSource(snapshot: MarkdownSnapshot, range: MarkdownRange): MdSemanticText =
+            MdSemanticText(snapshot, range, snapshot.read(range), None, None, [])
+        fun forPreview(
+            snapshot: MarkdownSnapshot,
+            range: MarkdownRange,
+            model: MarkdownParsedDocument,
+            presentation: MdRichPresentation? = None
+        ): MdSemanticText {
+            val cells = ArrayList<MdSemanticCell>()
+            val result = StringBuilder()
+            var offset = 0L
+            val count = mdFrameRowCount(model, presentation)
+            for (index in 0L ..< count) {
+                val row = mdFrameRow(model, presentation, index)
+                if (index > 0L) {
+                    result.append('\n');
+                    offset += 1L
+                }
+                for (column in 0L ..< row.cells.size) {
+                    if (column > 0L) {
+                        result.append('\t');
+                        offset += 1L
+                    }
+                    val text = row.cells[column]
+                    cells.add(MdSemanticCell(index, column, offset, text))
+                    result.append(text.text)
+                    offset += text.text.byteLength
+                }
+            }
+            return MdSemanticText(
+                snapshot,
+                range,
+                result.toString(),
+                Some(model),
+                presentation,
+                cells.toArray()
+            )
+        }
+    }
+}

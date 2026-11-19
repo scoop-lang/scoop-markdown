@@ -63,6 +63,7 @@ internal fun mdExplicitInputRange(operation: TextInputOperation): Boolean =
     when (operation) {
         case Commit(_, TextReplacement.Range(_)) -> true
         case Preedit(_, _, TextReplacement.Range(_)) -> true
+        case SetSelection(_) -> true
         else -> false
     }
 
@@ -114,6 +115,11 @@ internal fun mdPrepareSourceInput(
         val prior = current
         val applied = prior.apply(TextInputBatch(None, [operation]))
         when (operation) {
+            case SetSelection(_) -> {
+                boundary = true
+                current = applied
+                selected = mdInputSelection(current, start)
+            }
             case Preedit(val text, _, val replacement) -> {
                 boundary = true
                 val range = mdNativeRange(prior, replacement)

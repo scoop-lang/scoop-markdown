@@ -1,0 +1,14 @@
+package scoop.ui.markdown
+
+internal enum MdTextDragUnit {
+    Character, Word, Line
+}
+
+internal fun mdTextDragUnit(clicks: Int, shift: Boolean): MdTextDragUnit =
+    if (shift || clicks < 2)
+        MdTextDragUnit.Character
+    else
+        if (clicks == 2)
+            MdTextDragUnit.Word
+        else
+            MdTextDragUnit.Line

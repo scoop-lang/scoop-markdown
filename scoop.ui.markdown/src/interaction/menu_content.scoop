@@ -1,0 +1,64 @@
+package scoop.ui.markdown
+
+import scoop.ui.ViewKey
+import scoop.ui.component.*
+import scoop.window.*
+
+internal fun mdMenuContent(
+    target: MdTextTarget,
+    template: TextContextMenuTemplate
+): NativeMenuContent {
+    val entries = ArrayList<NativeMenuEntry>()
+    val available = mdTextAvailability(target)
+    var separator = false
+    for (entry in template.entries)
+        when (entry) {
+            case Separator -> separator = entries.size > 0L
+            case Command(val command, val label, val shortcut) -> {
+                if (!mdMenuSupports(command, target.readOnly))
+                    continue
+                if (separator)
+                    entries.add(
+                        NativeMenuEntry.Separator(
+                            ViewKey.Text("markdown.text." + entries.size.toString())
+                        )
+                    )
+                separator = false
+                entries.add(
+                    NativeMenuEntry.Action(
+                        NativeMenuItemSpec(
+                            ViewKey.Text("markdown.text." + entries.size.toString()),
+                            label,
+                            enabled = mdMenuAvailable(available, command),
+                            shortcut = shortcut
+                        ),
+                        {
+                            _ -> if (mdMenuAvailable(mdTextAvailability(target), command))
+                                target.execute(command)
+                        }
+                    )
+                )
+            }
+        }
+    when (target.options.contextMenuItems) {
+        case Some(val create) -> {
+            val extra = create()
+            if (entries.size > 0L && extra.entries.size > 0L)
+                entries.add(NativeMenuEntry.Separator(ViewKey.Text("markdown.text.extra")))
+            for (entry in extra.entries)
+                entries.add(entry)
+        }
+        case None -> Unit
+    }
+    return NativeMenuContent(entries.toArray())
+}
+
+internal fun mdSameMenuFactory(
+    a: (() -> NativeMenuContent)?,
+    b: (() -> NativeMenuContent)?
+): Boolean =
+    when ((a, b)) {
+        case(Some(val first), Some(val second)) -> first === second
+        case(None, None) -> true
+        else -> false
+    }

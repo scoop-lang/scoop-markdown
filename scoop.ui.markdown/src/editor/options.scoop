@@ -41,6 +41,7 @@ public struct MarkdownEditorOptions(
             source.lineNumbers,
             source.autoIndent,
             source.autoPairs,
-            source.autoFences
+            source.autoFences,
+            source.interaction
         )
 }

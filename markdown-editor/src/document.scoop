@@ -9,7 +9,7 @@ import scoop.url.url
 
 private struct EditorFileLocation(val path: Path, val uri: String)
 
-/** A document's location changes only after its current snapshot has been written. */
+/** A document owns its text and location across opening, editing and saving. */
 internal class EditorDocument(
     text: String = "",
     file: Path? = None,
@@ -30,6 +30,19 @@ internal class EditorDocument(
         return current.fileName?.display() ?: untitledName
     }
     val displayPath: String get() = file?.display() ?: "尚未保存到文件"
+    val canReuse: Boolean get() =
+        file == None && !editor.isDirty && !editor.isComposing && editor.snapshot.byteLength == 0L
+
+    fun openIntoEmpty(source: Path, text: String) {
+        if (!canReuse)
+            throw IllegalStateException(
+                Some("Only an unchanged untitled empty document can be reused")
+            )
+        val next = editorFileLocation(source)
+        editor.document.reset(text)
+        editor.markSaved(editor.snapshot.revision)
+        location.value = Some(next)
+    }
 
     fun save(destination: Path) {
         val next = editorFileLocation(destination)

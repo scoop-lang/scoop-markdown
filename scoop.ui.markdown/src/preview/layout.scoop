@@ -199,8 +199,10 @@ internal fun mdMeasurePreview(
     context: MeasureContext,
     constraints: Constraints
 ): MarkdownPreviewMeasurement {
-    val size =
+    val outer =
         constraints.constrain(Size(constraints.maxWidth ?: 640.0, constraints.maxHeight ?: 480.0))
+    val body = host.scrollbars.viewport(outer, context.layoutDirection)
+    val size = Size(body.width, body.height)
     val padding = host.options.padding
     val gutter = mdFoldGutter(mdActiveFolds(host.folding))
     val width = max(0.0, size.width - padding * 2.0 - gutter)
@@ -220,7 +222,7 @@ internal fun mdMeasurePreview(
     val active =
         model ?:
             return MarkdownPreviewMeasurement(
-                LayoutMetrics(size),
+                LayoutMetrics(outer),
                 None,
                 None,
                 host.visibleHeights,
@@ -257,7 +259,10 @@ internal fun mdMeasurePreview(
             host.viewport.layout(
                 size,
                 Size(
-                    max(size.width, host.maximumWidth + padding * 2.0 + gutter),
+                    if (host.options.wrapLongLines && host.options.wrapProse)
+                        size.width
+                    else
+                        max(size.width, host.maximumWidth + padding * 2.0 + gutter),
                     max(size.height, host.visibleHeights.total + padding * 2.0)
                 ),
                 adjustment
@@ -283,7 +288,10 @@ internal fun mdMeasurePreview(
                 host.viewport.layout(
                     size,
                     Size(
-                        max(size.width, host.maximumWidth + padding * 2.0 + gutter),
+                        if (host.options.wrapLongLines && host.options.wrapProse)
+                            size.width
+                        else
+                            max(size.width, host.maximumWidth + padding * 2.0 + gutter),
                         max(size.height, host.visibleHeights.total + padding * 2.0)
                     ),
                     adjustment
@@ -303,7 +311,7 @@ internal fun mdMeasurePreview(
             host.caches.remove(key)
         }
         return MarkdownPreviewMeasurement(
-            LayoutMetrics(size),
+            LayoutMetrics(outer),
             model,
             if (
                 (presentation?.changes?.snapshot?.revision ?: active.snapshot.revision) ==

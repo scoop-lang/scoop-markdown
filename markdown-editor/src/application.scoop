@@ -15,9 +15,10 @@ internal class EditorSession(val document: EditorDocument, val window: Window) {
 internal class EditorApplication(
     private val workers: CoroutineExecutor,
     private val renderers: List<MarkdownImageRenderer>,
-    private val startup: Path?
+    private val startup: Path?,
+    recentFile: Path? = editorRecentFilePath()
 ): Closeable {
-    val recent = EditorRecentFiles(editorRecentFilePath())
+    val recent = EditorRecentFiles(recentFile)
     val quitting = state(false)
     private val sessions = ArrayList<EditorSession>()
     private val generation = state(0L)
@@ -110,7 +111,24 @@ internal class EditorApplication(
             val file = editorAbsolutePath(path)
             when (findFile(file)) {
                 case Some(val existing) -> focus(existing)
-                case None -> attach(EditorDocument(file.readText(), Some(file)))
+                case None -> {
+                    val text = file.readText()
+                    when (findReusable(source)) {
+                        case Some(val existing) -> {
+                            existing.document.openIntoEmpty(file, text)
+                            existing.window.setTitle(existing.document.name + " — Scoop Markdown")
+                            when (existing.root) {
+                                case Some(val owner) -> {
+                                    owner.message.value = ""
+                                    owner.view.requestFocus(owner.view.activePane)
+                                }
+                                case None -> Unit
+                            }
+                            focus(existing)
+                        }
+                        case None -> attach(EditorDocument(text, Some(file)))
+                    }
+                }
             }
             remember(file, source)
         } catch (error: Exception) {
@@ -118,6 +136,29 @@ internal class EditorApplication(
                 newDocument()
             report("无法打开文件：" + (error.message ?: path.display()), source)
         }
+    }
+
+    private fun reusable(session: EditorSession): Boolean =
+        !session.closing &&
+            session.document.canReuse &&
+            session.root?.files?.isPending !=
+            Some(true) &&
+            session.root?.confirmation?.isPending !=
+            Some(true)
+
+    private fun findReusable(source: EditorWindow?): EditorSession? {
+        when (source) {
+            case Some(val owner) -> if (owner.scope.isMounted && reusable(owner.session))
+                return Some(owner.session)
+            case None -> Unit
+        }
+        for (session in sessions)
+            if (session.window.isFocused && reusable(session))
+                return Some(session)
+        for (session in sessions)
+            if (reusable(session))
+                return Some(session)
+        return None
     }
 
     private fun attach(document: EditorDocument): EditorSession {

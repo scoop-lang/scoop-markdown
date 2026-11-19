@@ -102,6 +102,15 @@ internal fun mdRichCommand(host: MarkdownRichHost, command: TextEditCommand): Bo
             }
         }
         case Paste -> return mdRichPaste(host)
+        case DeleteSelection -> if (!host.readOnly && !editor.selection.collapsed) {
+            val input = host.input ?: return false
+            host.perform {
+                input.command(
+                    [TextInputOperation.Commit("", TextReplacement.CurrentSelection)],
+                    MarkdownEditKind.Separate
+                )
+            }
+        }
         case Delete(val deletion) -> {
             if (host.readOnly)
                 return true

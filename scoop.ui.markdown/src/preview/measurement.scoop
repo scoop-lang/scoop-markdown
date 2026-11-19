@@ -65,6 +65,8 @@ public class MarkdownPreviewMeasurement internal constructor(
     public val measuredBlockCount: Long get() = rows.size
     public val blockCount: Long get() = heights.count
     public val scrollSnapshot: ScrollSnapshot get() = scroll.snapshot
+    public val presentationOffset: Point get() = scroll.presentationOffset
+    public val overscroll: Point get() = scroll.overscroll
     internal val contentX: Double get() = padding + gutter
     public val blockIndices: Array<Long> get() = Array<Long>(rows.size) { at -> rows[at].index }
 

@@ -1,0 +1,257 @@
+package scoop.tests.markdown.source
+
+import scoop.graphics.*
+import scoop.markdown.*
+import scoop.surface.*
+import scoop.test.*
+import scoop.tests.window.*
+import scoop.text.repeat
+import scoop.ui.markdown.*
+import scoop.window.*
+
+@Test
+private class MarkdownInteractionWindowTests {
+    @Test
+    fun nativeMenusAccessibilityAndTouchReachAllThreeTextHosts() {
+        mdRunViewportProbe(MdViewportTest.Interactions)
+    }
+}
+
+internal fun mdInteractionReady(probe: MdViewportProbe): Boolean {
+    val editor = probe.editor
+    return when (probe.step.value) {
+        case 2 -> editor.selection.range == MarkdownRange(12L, 18L)
+        case 3 -> mdInteractionMenuResult() >=
+            0 &&
+            (probe.kind == 1 || editor.snapshot.revision != probe.interactionRevision)
+        case 5 -> editor.selection.collapsed && editor.selection.cursor.byteOffset == 7L
+        case 6 -> editor.selection.range == MarkdownRange(6L, 9L)
+        case 7 -> probe.kind == 1 || editor.snapshot.read(MarkdownRange(6L, 9L)) == "猫"
+        case 9 -> editor.selection.collapsed && editor.selection.cursor.byteOffset == 7L
+        case 10 -> editor.selection.collapsed && editor.selection.cursor.byteOffset == 27L
+        else -> true
+    }
+}
+
+internal fun mdAdvanceInteractions(probe: MdViewportProbe, active: ActiveApplication) {
+    val editor = probe.editor
+    val field = probe.field!!
+    val start =
+        if (probe.kind == 0)
+            12L
+        else
+            8L
+    when (probe.step.value) {
+        case 0 -> probe.next { assertTrue(mdInteractionArea(field).requestFocus()) }
+        case 1 -> {
+            val expected =
+                if (probe.kind == 0)
+                    probe.original
+                else
+                    "one two 中文\n".repeat(59L) + "one two 中文"
+            assertEquals(1, mdInteractionAx(probe, 0, expected))
+            probe.next { assertEquals(1, mdInteractionAx(probe, 2, start = start, count = 2L)) }
+        }
+        case 2 -> {
+            assertEquals(1, mdInteractionAx(probe, 1, start = start, count = 2L))
+            mdPrepareInteractionMenu(probe.kind != 1)
+            probe.interactionRevision = editor.snapshot.revision
+            probe.next {
+                assertTrue(
+                    when (field.host) {
+                        case Source(val host) -> host.showContextMenu()
+                        case Preview(val host) -> host.showContextMenu()
+                        case Rich(val host) -> host.showContextMenu()
+                    }
+                )
+            }
+        }
+        case 3 -> {
+            assertEquals(
+                if (probe.kind == 1)
+                    1
+                else
+                    7,
+                mdInteractionMenuResult()
+            )
+            probe.next {
+                if (probe.kind != 1)
+                    assertTrue(mdInteractionCommand(field, TextEditCommand.Undo))
+                assertEquals(probe.original, editor.document.toMarkdown())
+                editor.setSelection(MarkdownSelection(MarkdownPosition(0L), MarkdownPosition(0L)))
+            }
+        }
+        case 4 -> probe.next { mdInteractionTap(probe, 41L) }
+        case 5 -> probe.next { mdInteractionTap(probe, 42L) }
+        case 6 -> probe.next {
+            assertEquals(
+                if (probe.kind == 1)
+                    0
+                else
+                    1,
+                mdInteractionAx(probe, 3, "猫")
+            )
+        }
+        case 7 -> probe.next {
+            if (probe.kind != 1)
+                assertTrue(mdInteractionCommand(field, TextEditCommand.Undo))
+            assertEquals(probe.original, editor.document.toMarkdown())
+            editor.setSelection(MarkdownSelection(MarkdownPosition(7L), MarkdownPosition(7L)))
+        }
+        case 8 -> probe.next { mdInteractionTap(probe, 43L) }
+        case 9 -> probe.next { mdInteractionHandleMove(probe) }
+        case 10 -> probe.next {
+            assertEquals(probe.original, editor.document.toMarkdown())
+            probe.mounted = false
+        }
+        case 11 -> {
+            assertTrue(field.retired)
+            if (probe.kind < 2) {
+                probe.kind += 1
+                probe.accepted = -1
+                probe.mounted = true
+                probe.step.value = 0
+            } else {
+                probe.finished = true
+                active.requestExit()
+            }
+        }
+        else -> fail(Some("Unexpected native Markdown interaction step"))
+    }
+}
+
+internal fun mdInteractionArea(field: MdViewportField): InputArea =
+    when (field.host) {
+        case Source(val host) -> host.area
+        case Preview(val host) -> host.area
+        case Rich(val host) -> host.area
+    }
+
+private fun mdInteractionCommand(field: MdViewportField, command: TextEditCommand): Boolean =
+    when (field.host) {
+        case Source(val host) -> host.execute(command)
+        case Preview(val host) -> host.execute(command)
+        case Rich(val host) -> host.execute(command)
+    }
+
+private fun mdInteractionTap(probe: MdViewportProbe, id: Long) {
+    val field = probe.field!!
+    val caret = mdInteractionCaret(field, 7L)
+    val point =
+        mdInteractionArea(field).toWindow(Rect(caret.x, caret.y + caret.height / 2.0, 0.0, 0.0))!!
+    mdNativeView(probe.window!!) {
+        view -> @Unsafe
+        {
+            sendNativeContact(view, id, 0, 0, point.x, point.y)
+            sendNativeContact(view, id, 0, 2, point.x, point.y)
+        }
+    }
+}
+
+internal fun mdInteractionCaret(field: MdViewportField, offset: Long): Rect {
+    val position = MarkdownPosition(offset)
+    return when (field.host) {
+        case Source(val host) -> host.caret(position)
+        case Preview(val host) -> host.caret(position)
+        case Rich(val host) -> host.caret(position)
+    }!!
+}
+
+private fun mdInteractionHandleMove(probe: MdViewportProbe) {
+    val field = probe.field!!
+    val first = mdInteractionCaret(field, 7L)
+    val last = mdInteractionCaret(field, 27L)
+    val radius = probe.interaction.touch.selectionHandles.radius
+    val area = mdInteractionArea(field)
+    val a =
+        area.toWindow(
+            Rect(first.x + first.width / 2.0, first.y + first.height + radius, 0.0, 0.0)
+        )!!
+    val b =
+        area.toWindow(Rect(last.x + last.width / 2.0, last.y + last.height + radius, 0.0, 0.0))!!
+    mdNativeView(probe.window!!) {
+        view -> @Unsafe
+        {
+            sendNativeContact(view, 44L, 0, 0, a.x, a.y)
+            sendNativeContact(view, 44L, 0, 1, b.x, b.y)
+            sendNativeContact(view, 44L, 0, 2, b.x, b.y)
+        }
+    }
+}
+
+private fun mdInteractionAx(
+    probe: MdViewportProbe,
+    operation: Int,
+    text: String = "",
+    start: Long = 0L,
+    count: Long = 0L
+): Int =
+    mdNativeView(probe.window!!) {
+        view -> @Unsafe
+        {
+            return@mdNativeView text.withUtf8Bytes {
+                bytes,
+                length -> @Unsafe
+                {
+                    return@withUtf8Bytes nativeMarkdownAx(
+                        view,
+                        operation,
+                        bytes,
+                        length,
+                        start,
+                        count
+                    )
+                }
+            }
+        }
+    }
+
+internal fun mdObserveInteractionMenus() {
+    @Unsafe
+    {
+        nativeObserveInteractionMenus()
+    }
+}
+
+internal fun mdCloseInteractionMenus() {
+    @Unsafe
+    {
+        nativeCloseInteractionMenus()
+    }
+}
+
+private fun mdPrepareInteractionMenu(deletion: Boolean) {
+    @Unsafe
+    {
+        nativePrepareInteractionMenu(deletion)
+    }
+}
+
+private fun mdInteractionMenuResult(): Int {
+    @Unsafe
+    {
+        return nativeInteractionMenuResult()
+    }
+}
+
+@Extern(name = "scoop_markdown_test_ax")
+private fun nativeMarkdownAx(
+    view: Ptr<Unit>,
+    operation: Int,
+    bytes: Ptr<UInt8>,
+    length: Long,
+    start: Long,
+    count: Long
+): Int
+
+@Extern(name = "scoop_markdown_test_menu_observe")
+private fun nativeObserveInteractionMenus()
+
+@Extern(name = "scoop_markdown_test_menu_prepare")
+private fun nativePrepareInteractionMenu(deletion: Boolean)
+
+@Extern(name = "scoop_markdown_test_menu_result")
+private fun nativeInteractionMenuResult(): Int
+
+@Extern(name = "scoop_markdown_test_menu_close")
+private fun nativeCloseInteractionMenus()

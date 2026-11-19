@@ -111,6 +111,7 @@ public class MarkdownRichHost public constructor(
     init {
         preview.rich = Some(this)
         area.textInput = !readOnly && options.enabled
+        preview.interactions.update()
     }
 
     internal fun checkOpen() {
@@ -202,6 +203,7 @@ public class MarkdownRichHost public constructor(
         this.readOnly = readOnly
         changed = onChanged
         area.textInput = !readOnly && options.enabled
+        preview.interactions.update()
         refresh()
         publishNative()
     }
@@ -226,6 +228,10 @@ public class MarkdownRichHost public constructor(
         if (!preview.options.enabled || !area.isFocusActive || !area.scope.isInputAllowed)
             return false
         return mdRichCommand(this, command)
+    }
+    public fun showContextMenu(): Boolean {
+        checkOpen()
+        return preview.showContextMenu()
     }
 
     public fun setStyle(style: MarkdownInlineStyle, enabled: Boolean): Boolean {
@@ -359,6 +365,7 @@ public class MarkdownRichHost public constructor(
             refresh()
             invalidate()
             publishNative(origin)
+            preview.interactions.refresh()
         }
     }
 

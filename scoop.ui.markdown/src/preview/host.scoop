@@ -60,7 +60,7 @@ public class MarkdownPreviewHost public constructor(
     internal var alignment: MdScrollAlignment? = None
     internal var editorMount: MdEditorMount? = None
     internal var revealTarget: MarkdownPosition? = None
-    internal var drag: MarkdownPosition? = None
+    internal var drag: MdPreviewDrag? = None
     internal var pressed: MarkdownPreviewHit? = None
     internal var moved = false
     internal var openLink: (String) -> Unit = { _ -> Unit }
@@ -75,13 +75,14 @@ public class MarkdownPreviewHost public constructor(
         }
     public val focus = scope.focusTarget(area, FocusOptions(visibility = FocusVisibility.Always))
     private val textCursor = MdTextCursor(scope, area)
-    internal val scrollbars =
-        MdScrollbars(scope, scroll, initialOptions.enabled, initialStyle.text.fontSize)
+    internal val interactions = MdTextInteractions(MdPreviewTarget(this))
+    internal val scrollbars = MdScrollbars(MdPreviewTarget(this), interactions.semantics.handle)
     init {
         options.check()
         area.scope.defaultAction = { context, event -> mdPreviewEvent(this, context, event) }
         area.scope.enabled = options.enabled
-        scrollbars.update(options.enabled, style.text.fontSize)
+        scrollbars.update()
+        interactions.update()
         observeImages()
     }
 
@@ -98,6 +99,7 @@ public class MarkdownPreviewHost public constructor(
     }
 
     private fun sourceChanged(change: MarkdownChange) {
+        interactions.changed()
         if (change.kind == MarkdownChangeKind.Reset)
             alignment = None
         else
@@ -167,8 +169,7 @@ public class MarkdownPreviewHost public constructor(
             rebound ||
                 style !==
                 this.style ||
-                options !=
-                this.options ||
+                !options.sameLayout(this.options) ||
                 !sameFonts ||
                 !sameImages ||
                 this.documentUri !=
@@ -205,7 +206,8 @@ public class MarkdownPreviewHost public constructor(
         openLink = onOpenLink
         openSource = onSource
         area.scope.enabled = options.enabled
-        scrollbars.update(options.enabled, style.text.fontSize)
+        scrollbars.update()
+        interactions.update()
     }
 
     private fun observeImages() {
@@ -348,6 +350,10 @@ public class MarkdownPreviewHost public constructor(
             return false
         return mdPreviewCommand(this, command)
     }
+    public fun showContextMenu(): Boolean {
+        checkOpen()
+        return interactions.menu.show()
+    }
 
     public override fun close() {
         if (closed)
@@ -360,6 +366,7 @@ public class MarkdownPreviewHost public constructor(
         imageLease = None
         failure = mdCleanup(failure) { textCursor.close() }
         failure = mdCleanup(failure) { scrollbars.close() }
+        failure = mdCleanup(failure) { interactions.close() }
         failure = mdCleanup(failure) { focus.close() }
         failure = mdCleanup(failure) { area.close() }
         failure = mdCleanup(failure) { viewport.close() }

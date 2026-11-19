@@ -69,6 +69,11 @@ private class MdRichPreparation(
             val prior = current
             val applied = prior.apply(TextInputBatch(None, [operation]))
             when (operation) {
+                case SetSelection(_) -> {
+                    boundary = true
+                    current = applied
+                    selected = mdRichSelection(builder.content, current.selection)
+                }
                 case Preedit(val text, _, val replacement) -> {
                     boundary = true
                     val range = mdNativeRange(prior, replacement)

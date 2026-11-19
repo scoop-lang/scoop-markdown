@@ -1,0 +1,41 @@
+package scoop.markdown
+
+/** Moves a semantic fragment with one publication, using baseline source coordinates. */
+public fun MarkdownSyntax.moveMarkdown(
+    range: MarkdownRange,
+    position: MarkdownPosition
+): MarkdownFragmentEdit {
+    snapshot.read(range)
+    snapshot.read(MarkdownRange(position.byteOffset, position.byteOffset))
+    val start =
+        if (position.byteOffset < range.start)
+            position.byteOffset
+        else
+            range.start
+    val end =
+        if (position.byteOffset > range.end)
+            position.byteOffset
+        else
+            range.end
+    val syntax = this
+    val region =
+        if (syntax is ParsedMarkdown)
+            syntax.region(MarkdownRange(start, end)).parse()
+        else
+            if (syntax is ParsedMarkdownRegion)
+                syntax
+            else
+                throw IllegalArgumentException(Some("Markdown move requires parsed syntax"))
+    if (range.isEmpty || (position.byteOffset >= range.start && position.byteOffset <= range.end))
+        return MarkdownFragmentEdit(
+            snapshot.prepare(MarkdownEdit(snapshot.revision, [])),
+            range,
+            region
+        )
+    val fragment = region.exportMarkdown(range)
+    val removed = region.replaceMarkdown(range, "")
+    val at = removed.change.map(MarkdownAnchor(position)).position
+    val after = region.region.after(removed.change).parse()
+    val inserted = after.replaceMarkdown(MarkdownRange(at.byteOffset, at.byteOffset), fragment)
+    return mdFragmentCombine(removed.change, inserted)
+}

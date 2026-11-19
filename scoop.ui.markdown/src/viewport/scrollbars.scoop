@@ -1,61 +1,85 @@
 package scoop.ui.markdown
 
 import scoop.graphics.*
+import scoop.math.max
+import scoop.math.min
+import scoop.platform.time.MonotonicTimeSource
 import scoop.surface.*
 import scoop.ui.*
+import scoop.ui.component.*
 import scoop.window.*
+import scoop.window.accessibility.*
 
-/** Adds overlay controls to an existing virtual viewport without binding a second one. */
-internal class MdScrollbars(
-    scope: ComponentScope,
-    scroll: ScrollState,
-    enabled: Boolean,
-    lineStep: Double
-): Closeable {
-    private val horizontal = MdScrollbar(scope, scroll, true, enabled, lineStep)
-    private val vertical = MdScrollbar(scope, scroll, false, enabled, lineStep)
-
-    fun update(enabled: Boolean, lineStep: Double) {
-        horizontal.update(enabled, lineStep)
-        vertical.update(enabled, lineStep)
+/** Controls the existing virtual viewport, including its native semantic scroll range. */
+internal class MdScrollbars(private val target: MdTextTarget, parent: SemanticsHandle): Closeable {
+    private val feedback = MdScrollbarFeedback(target)
+    private val horizontal = MdScrollbar(target, true, feedback, parent)
+    private val vertical = MdScrollbar(target, false, feedback, parent)
+    fun update() {
+        feedback.update()
+        horizontal.update()
+        vertical.update()
     }
-
+    fun viewport(size: Size, direction: LayoutDirection): Rect =
+        feedback.behavior.viewport(size, target.axes, direction)
     fun scene(context: SceneContext, snapshot: ScrollSnapshot) {
-        horizontal.scene(context, snapshot)
-        vertical.scene(context, snapshot)
+        val x = horizontal.scene(context, snapshot)
+        val y = vertical.scene(context, snapshot)
+        feedback.scene(context, x, y)
     }
-
     public override fun close() {
         var failure = mdCleanup(None) { horizontal.close() }
         failure = mdCleanup(failure) { vertical.close() }
+        failure = mdCleanup(failure) { feedback.close() }
         mdThrow(failure)
     }
 }
 
 private class MdScrollbar(
-    private val scope: ComponentScope,
-    private val scroll: ScrollState,
+    private val target: MdTextTarget,
     private val horizontal: Boolean,
-    private var enabled: Boolean,
-    private var lineStep: Double
+    private val feedback: MdScrollbarFeedback,
+    parent: SemanticsHandle
 ): Closeable {
+    private val scope: ComponentScope get() = target.scope
+    private val scroll: ScrollState get() = target.viewport.state
+    private val behavior: MdScrollbarBehavior get() = feedback.behavior
     private var closed = false
     private var geometry: MdScrollbarGeometry? = None
     private var grab = 0.0
+    private var pressed = false
+    private var pageDirection = 0.0
     private val area = scope.createArea { context, event -> handle(context, event) }
+    private val semantics = scope.semantics(SemanticRole.ScrollBar, Some(parent))
     private val drag =
-        scope.drag(
-            area,
-            options(),
-            { point -> geometry?.thumb?.contains(point) ?: false },
-            { event -> dragged(event) }
-        )
-
+        scope.drag(area, options(), { point -> accepts(point) }, { event -> dragged(event) })
+    private val width = scope.animation(behavior.idleWidth)
+    private val opacity = scope.animation(behavior.idleOpacity)
+    private val timer = scope.createDeadline { repeatPage() }
+    private val activity =
+        area.scope.observeActivity {
+            if (!area.scope.isInputAllowed)
+                release()
+        }
+    private val window =
+        scope.observeWindowActivity {
+            value -> if (!value.focused || !value.visible || value.occluded)
+                release()
+        }
+    private val finished =
+        area.scope.addEventFinished {
+            event -> when (event) {
+                case Pointer(
+                    InputPointerEvent.Button(_, MouseButton.Left, ElementState.Released, _)
+                ) -> release()
+                else -> Unit
+            }
+        }
     init {
-        area.scope.enabled = enabled
+        area.scope.parent = Some(target.area.scope)
+        area.scope.enabled = target.enabled
         area.scope.defaultAction = { context, event -> handle(context, event) }
     }
-
     private fun options(): DragOptions =
         DragOptions(
             if (horizontal)
@@ -63,41 +87,142 @@ private class MdScrollbar(
             else
                 DragAxis.Vertical,
             threshold = 0.0,
-            enabled = enabled
+            enabled = target.enabled
         )
-
-    fun update(enabled: Boolean, lineStep: Double) {
-        this.enabled = enabled
-        this.lineStep = lineStep
-        area.scope.enabled = enabled
-        drag.update(options(), { point -> geometry?.thumb?.contains(point) ?: false }) {
-            event -> dragged(event)
-        }
+    private fun accepts(point: Point): Boolean {
+        val shape = geometry ?: return false
+        return shape.thumb.contains(point) ||
+            (behavior.input.trackPress == ScrollbarTrackPress.Jump && shape.bounds.contains(point))
     }
-
-    fun scene(context: SceneContext, snapshot: ScrollSnapshot) {
-        val next = mdScrollbarGeometry(snapshot, horizontal, context.layoutDirection)
+    fun update() {
+        area.scope.enabled = target.enabled
+        if (!target.enabled) {
+            drag.cancel();
+            release()
+        }
+        if (behavior.input.repeatDelay == None)
+            timer.cancel()
+        drag.update(options(), { point -> accepts(point) }) { event -> dragged(event) }
+        refresh()
+        publishSemantics()
+    }
+    private fun publishSemantics() {
+        semantics.updateScrollBar(
+            target.viewport,
+            if (horizontal)
+                SemanticOrientation.Horizontal
+            else
+                SemanticOrientation.Vertical,
+            max(1.0, target.lineStep),
+            SemanticProperties(
+                enabled = target.enabled && target.options.semantics.enabled,
+                hidden = target.options.semantics.hidden,
+                ignored = target.options.semantics.ignored
+            )
+        )
+    }
+    private fun refresh() {
+        if (closed)
+            return
+        val active = pressed || drag.isDragging
+        val hovered = area.scope.isHovered
+        val next =
+            if (active)
+                behavior.dragWidth
+            else
+                if (hovered)
+                    behavior.hoverWidth
+                else
+                    behavior.idleWidth
+        behavior.animate(
+            width,
+            next,
+            if (next > width.target)
+                behavior.input.expandDuration
+            else
+                behavior.input.contractDuration
+        )
+        behavior.animate(
+            opacity,
+            if (active)
+                behavior.dragOpacity
+            else
+                if (hovered)
+                    behavior.hoverOpacity
+                else
+                    behavior.idleOpacity,
+            behavior.input.shadeDuration,
+            true
+        )
+        feedback.refresh()
+    }
+    fun scene(context: SceneContext, snapshot: ScrollSnapshot): Rect? {
+        val next =
+            mdScrollbarGeometry(
+                snapshot,
+                horizontal,
+                context.layoutDirection,
+                behavior.thickness,
+                behavior.input.placement,
+                context.size
+            )
+        val alpha =
+            opacity.value *
+                feedback.opacity.value *
+                if (target.enabled)
+                    1.0
+                else
+                    0.4
         when (next) {
             case Some(val shape) -> {
-                if (enabled)
+                // The semantic range remains discoverable while an overlay fades out.
+                context.semantics(semantics, shape.bounds)
+                if (target.enabled && alpha > 0.0 && width.value > 0.0)
                     context.place(area, shape.bounds)
-                val alpha =
-                    if (!enabled)
-                        0.25
+                val cross = max(0.0, min(width.value, behavior.thickness) - 4.0)
+                val rect =
+                    if (horizontal)
+                        Rect(
+                            shape.thumb.x,
+                            shape.bounds.y + shape.bounds.height - cross - 2.0,
+                            shape.thumb.width,
+                            cross
+                        )
                     else
-                        if (area.scope.isHovered || drag.isDragging)
-                            0.8
-                        else
-                            0.55
+                        Rect(
+                            if (context.layoutDirection == LayoutDirection.Rtl)
+                                shape.bounds.x + 2.0
+                            else
+                                shape.bounds.x + shape.bounds.width - cross - 2.0,
+                            shape.thumb.y,
+                            cross,
+                            shape.thumb.height
+                        )
+                val color = target.color
+                val track = behavior.showTrack
                 context.draw {
                     paint ->
-                    paint.canvas.drawRect(shape.bounds, Paint(Color(0.5, 0.5, 0.5, 0.1)))
-                    paint.canvas.drawRoundRect(
-                        shape.thumb,
-                        4.0,
-                        4.0,
-                        Paint(Color(0.48, 0.5, 0.53, alpha))
-                    )
+                    if (track)
+                        paint.canvas.drawRect(
+                            shape.bounds,
+                            Paint(
+                                Color(color.red, color.green, color.blue, color.alpha * alpha * 0.1)
+                            )
+                        )
+                    if (cross > 0.0 && alpha > 0.0)
+                        paint.canvas.drawRoundRect(
+                            rect,
+                            4.0,
+                            4.0,
+                            Paint(
+                                Color(
+                                    color.red,
+                                    color.green,
+                                    color.blue,
+                                    color.alpha * alpha * 0.65
+                                )
+                            )
+                        )
                 }
             }
             case None -> Unit
@@ -105,24 +230,38 @@ private class MdScrollbar(
         context.onFrameComplete {
             frame -> if (!closed && frame.submission == FrameSubmission.Accepted) {
                 geometry = next
-                if (next == None)
-                    drag.cancel()
+                if (next == None || alpha <= 0.0) {
+                    drag.cancel();
+                    release()
+                }
+                refresh()
+                publishSemantics()
             }
         }
+        return next?.bounds
     }
-
     private fun handle(context: RoutedEventContext, event: InputEvent) {
         if (closed || !scope.isMounted)
             return
         if (context.phase == RoutedPhase.Notification) {
             when (event) {
-                case Pointer(InputPointerEvent.Entered(_)) -> scope.requestFrame()
-                case Pointer(InputPointerEvent.Left(_)) -> scope.requestFrame()
+                case Pointer(InputPointerEvent.Entered(_)) -> {
+                    scope.nativeWindow.setCursorIcon(CursorIcon.Default)
+                    feedback.wake();
+                    refresh()
+                }
+                case Pointer(InputPointerEvent.Left(_)) -> {
+                    if (target.enabled && target.area.scope.isHovered)
+                        scope.nativeWindow.setCursorIcon(CursorIcon.Text)
+                    timer.cancel();
+                    refresh()
+                }
+                case Pointer(InputPointerEvent.Cancelled(_, _)) -> release()
                 else -> Unit
             }
             return
         }
-        if (context.phase != RoutedPhase.Default || !enabled)
+        if (context.phase != RoutedPhase.Default || !target.enabled)
             return
         when (event) {
             case Pointer(
@@ -130,46 +269,123 @@ private class MdScrollbar(
             ) -> {
                 val shape = geometry ?: return
                 val point = context.localPosition ?: return
-                if (shape.thumb.contains(point))
+                if (accepts(point) || !area.scope.claimPointer(MouseButton.Left))
                     return
-                val amount =
+                pressed = true
+                pageDirection =
                     if (shape.axis(point) < shape.thumbStart)
-                        -shape.page
+                        -1.0
                     else
-                        shape.page
-                scroll.scrollBy(
-                    if (horizontal)
-                        Point(amount, 0.0)
-                    else
-                        Point(0.0, amount),
-                    ScrollOrigin.User
-                )
+                        1.0
+                feedback.wake()
+                if (page())
+                    schedule(false)
+                refresh()
                 context.consume()
             }
-            case Pointer(InputPointerEvent.Wheel(_, _, _, _)) -> context.consumeScroll(lineStep) {
-                amount ->
-                val moved = scroll.scrollBy(Point(-amount.x, -amount.y), ScrollOrigin.User)
-                Point(-moved.x, -moved.y)
+            case Pointer(
+                InputPointerEvent.Button(_, MouseButton.Left, ElementState.Released, _)
+            ) -> {
+                if (pressed) {
+                    release();
+                    context.consume()
+                }
             }
+            case Pointer(InputPointerEvent.Moved(_)) -> if (pressed) {
+                schedule(true)
+                context.consume()
+            }
+            case Pointer(InputPointerEvent.Wheel(_, _, val phase, val momentum)) ->
+            target.viewport.consumeScroll(
+                context,
+                target.lineStep,
+                target.axes,
+                phase = phase,
+                momentumPhase = momentum
+            )
             else -> Unit
         }
     }
-
+    private fun schedule(resume: Boolean) {
+        val delay = behavior.input.repeatDelay ?: return
+        timer.schedule(
+            MonotonicTimeSource.markNow() +
+                if (resume)
+                    behavior.input.repeatInterval
+                else
+                    delay
+        )
+    }
+    private fun repeatPage() {
+        if (
+            closed ||
+                !pressed ||
+                !target.enabled ||
+                !area.scope.isInputAllowed ||
+                !area.scope.isHovered
+        )
+            return
+        val shape = geometry ?: return
+        val point = area.pointerPosition ?: return
+        if (shape.thumb.contains(point))
+            return
+        val direction =
+            if (shape.axis(point) < shape.thumbStart)
+                -1.0
+            else
+                1.0
+        if (direction == pageDirection && page())
+            schedule(true)
+    }
+    private fun page(): Boolean {
+        val shape = geometry ?: return false
+        val amount = shape.page * pageDirection
+        scroll.cancelAnimation()
+        return scroll.scrollBy(
+            if (horizontal)
+                Point(amount, 0.0)
+            else
+                Point(0.0, amount),
+            ScrollOrigin.User
+        ) !=
+            Point(0.0, 0.0)
+    }
+    private fun release() {
+        if (closed)
+            return
+        timer.cancel()
+        val claimed = pressed
+        pressed = false
+        if (claimed && !area.isClosed)
+            area.scope.cancelPointerClaim()
+        refresh()
+    }
     private fun dragged(event: DragEvent) {
         when (event) {
             case Started(val sample) -> {
                 val shape = geometry ?: return
-                grab = (shape.axis(sample.position) - shape.thumbStart) / shape.thumbLength
-                scroll.beginLayoutRequest(ScrollOrigin.User)
+                val jump = !shape.thumb.contains(sample.position)
+                grab =
+                    if (jump)
+                        0.5
+                    else
+                        (shape.axis(sample.position) - shape.thumbStart) / shape.thumbLength
+                feedback.wake()
+                scroll.cancelAnimation()
+                if (jump)
+                    move(sample.position)
+                else
+                    scroll.beginLayoutRequest(ScrollOrigin.User)
             }
             case Moved(val sample) -> move(sample.position)
-            case Ended(val sample) -> move(sample.position)
-            case Cancelled(_, _) -> Unit
+            case Ended(val sample) -> {
+                move(sample.position);
+                release()
+            }
+            case Cancelled(_, _) -> release()
         }
-        if (!closed && scope.isMounted)
-            scope.requestFrame()
+        refresh()
     }
-
     private fun move(point: Point) {
         val shape = geometry ?: return
         val offset = shape.offset(point, grab)
@@ -182,13 +398,20 @@ private class MdScrollbar(
             ScrollOrigin.User
         )
     }
-
     public override fun close() {
         if (closed)
             return
+        release()
         closed = true
-        var failure = mdCleanup(None) { drag.close() }
+        var failure = mdCleanup(None) { timer.close() }
+        failure = mdCleanup(failure) { drag.close() }
+        failure = mdCleanup(failure) { activity.close() }
+        failure = mdCleanup(failure) { window.close() }
+        failure = mdCleanup(failure) { finished.close() }
         failure = mdCleanup(failure) { area.close() }
+        failure = mdCleanup(failure) { semantics.close() }
+        failure = mdCleanup(failure) { width.close() }
+        failure = mdCleanup(failure) { opacity.close() }
         geometry = None
         mdThrow(failure)
     }

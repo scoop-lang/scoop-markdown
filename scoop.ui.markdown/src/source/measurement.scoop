@@ -114,6 +114,8 @@ public class MarkdownSourceMeasurement internal constructor(
         else
             0L
     public val scrollSnapshot: ScrollSnapshot get() = scroll.snapshot
+    public val presentationOffset: Point get() = scroll.presentationOffset
+    public val overscroll: Point get() = scroll.overscroll
     internal val contentX: Double get() = padding + gutter
     public val lineIndices: Array<Long> get() =
         Array<Long>(rows.size) { index -> rows[index].index }

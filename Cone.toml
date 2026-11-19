@@ -5,6 +5,7 @@ members = [
     "scoop.markdown",
     "scoop.ui.markdown",
     "markdown-editor",
+    "markdown-editor/tests-cones/window",
     "scoop.markdown/examples/source",
     "scoop.ui.markdown/examples/preview",
     "scoop.ui.markdown/examples/source-editor",

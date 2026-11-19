@@ -14,7 +14,11 @@
 
 ## 构建与运行
 
-使用已安装并更新的 [Scoop 工具链](https://github.com/scoop-lang/scoop)，默认位置为 `~/.scoop`。基础 UI/window 库需要包含 [Scoop PR #135](https://github.com/scoop-lang/scoop/pull/135) 的公开文本绘制、状态检查和多格式剪贴板接口。仓库中的库使用本地 path 依赖，其他 Scoop 库消费工具链的预编译资源。
+使用已安装并更新的 [Scoop 工具链](https://github.com/scoop-lang/scoop)，默认位置为 `~/.scoop`。基础 UI/window 库需要包含公开文本绘制与多格式剪贴板接口，以及 `TextInputOperation.SetSelection`、`TextEditCommand.DeleteSelection`、`DragSource`／`DropTarget`、`LongPress`／`ScrollPan`、视口物理效果和 `SemanticsHandle.updateScrollBar`。仓库中的库使用本地 path 依赖，其他 Scoop 库消费工具链的预编译资源。
+
+如果安装中的基础库尚未更新，可给 `check`／`build`／`run`／`test` 追加 `--cone-path /absolute/path/to/cones`，消费配套的新预编译基础库；不需要重建编译器。
+
+完整编辑器还要求 `scoop.ui.component` 包含 Resizable 末尾把手的挂载修复：只有相邻面板之间创建把手。缺少该修复的基础库会在单栏／双栏窗口初始化无障碍操作时越界退出，需更新配套组件产物。
 
 以下命令从仓库根运行：
 
@@ -24,7 +28,9 @@
 ~/.scoop/bin/scoop --sysroot ~/.scoop run markdown-editor --release -- /absolute/path/document.md
 ```
 
-编辑器不传文件参数时创建空白文档，也可打开已有 Markdown 文件；原生文件菜单支持新建、打开、最近文件、保存、另存为与关闭，未保存的文档在关闭前确认。macOS app 打包和窗口操作见[编辑器说明](markdown-editor/README.md)。
+原生上下文菜单、拖放、Touch／Pen、系统滚动条、回弹与无障碍操作说明见[交互验证](docs/INTERACTIONS.md)，三个 UI 示例可共用[演示文稿](examples/interactions.md)。
+
+编辑器不传文件参数时创建空白文档，打开文件会复用未保存、未修改的空窗口。所见即所得活动时提供格式工具栏、标题级别下拉及带“标题”子菜单的原生右键菜单；“显示”菜单可切换自动换行。原生文件菜单支持新建、打开、最近文件、保存、另存为与关闭，未保存的文档在关闭前确认。macOS app 打包和窗口操作见[编辑器说明](markdown-editor/README.md)。
 
 无 UI 文件处理示例可以独立运行：
 
@@ -45,7 +51,7 @@
 ~/.scoop/bin/scoop --sysroot ~/.scoop test scoop.markdown/examples/source --release
 ```
 
-原生交互测试在 `scoop.ui.markdown/tests-cones/`，需要桌面会话及窗口焦点，运行方法见[测试说明](test-support/README.md)。大文档测试使用仓库自带的固定语料。所有构建产物留在被忽略的 `target/`；原始测试日志保存在仓库外。
+库的原生交互测试在 `scoop.ui.markdown/tests-cones/`，完整应用的窗口测试在 `markdown-editor/tests-cones/window/`，需要桌面会话及窗口焦点，运行方法见[测试说明](test-support/README.md)。大文档测试使用仓库自带的固定语料。所有构建产物留在被忽略的 `target/`；原始测试日志保存在仓库外。
 
 ## 来源与许可
 

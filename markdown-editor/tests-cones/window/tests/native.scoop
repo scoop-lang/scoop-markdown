@@ -1,0 +1,51 @@
+package scoop.examples.markdown.editor
+
+import scoop.test.*
+import scoop.tests.window.*
+import scoop.window.*
+import scoop.window.native.*
+
+private fun <T> editorProbeView(window: Window, action: (Ptr<Unit>) -> T): T {
+    @Unsafe
+    {
+        return window.acquireNativeWindow().use {
+            lease -> @Unsafe
+            {
+                return@use when (lease.handle) {
+                    case AppKit(_, val view) -> action(view)
+                }
+            }
+        }
+    }
+}
+
+internal fun editorProbeControl(probe: EditorFeatureProbe, name: String, operation: Int = 0): Int =
+    editorProbeView(probe.window) {
+        view -> @Unsafe
+        {
+            return@editorProbeView name.withUtf8Bytes {
+                bytes,
+                length -> @Unsafe
+                {
+                    return@withUtf8Bytes nativeMarkdownControl(view, bytes, length, operation)
+                }
+            }
+        }
+    }
+
+internal fun editorProbeMenu(probe: EditorFeatureProbe, format: Int) {
+    editorProbeView(probe.window) {
+        view -> @Unsafe
+        {
+            nativePrepareMarkdownFormatMenu(format)
+            nativeMarkdownContextKey(view)
+        }
+    }
+}
+
+internal fun editorProbeMenuResult(): Int {
+    @Unsafe
+    {
+        return nativeMarkdownMenuResult()
+    }
+}

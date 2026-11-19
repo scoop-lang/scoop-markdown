@@ -11,6 +11,45 @@ import scoop.window.*
 @Test
 private class EditorDocumentTests {
     @Test
+    fun openingReusesOnlyAnUnchangedUntitledEmptyDocument() {
+        val directory = createTempDirectory(prefix = "markdown-editor-open-")
+        try {
+            val file = directory.resolve(Path.fromString("opened 文稿.md"))
+            file.writeText("# 标题\n\n正文\n")
+            EditorDocument().use {
+                document ->
+                val editor = document.editor
+                assertTrue(document.canReuse)
+                document.openIntoEmpty(file, file.readText())
+                assertTrue(document.editor === editor)
+                assertEquals(Some(file), document.file)
+                assertEquals("opened 文稿.md", document.name)
+                assertEquals(file.readText(), editor.snapshot.toMarkdown())
+                assertFalse(editor.isDirty)
+                assertFalse(editor.canUndo)
+                assertFalse(editor.canRedo)
+                assertFalse(document.canReuse)
+                assertTrue(document.uri.contains("%20"))
+            }
+            EditorDocument().use {
+                document ->
+                document.editor.replaceSelection("temporary")
+                assertTrue(document.editor.undo())
+                assertEquals("", document.editor.snapshot.toMarkdown())
+                assertFalse(document.canReuse)
+                assertFailsWith<IllegalStateException> {
+                    document.openIntoEmpty(file, "replacement")
+                }
+                assertEquals("", document.editor.snapshot.toMarkdown())
+                assertEquals(None, document.file)
+            }
+            EditorDocument("", Some(file)).use { document -> assertFalse(document.canReuse) }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun untitledDocumentsSaveAndSaveAsWithoutSharingHistory() {
         val directory = createTempDirectory(prefix = "markdown-editor-document-")
         try {

@@ -11,14 +11,10 @@ import scoop.time.Duration
 import scoop.ui.ScrollOrigin
 import scoop.window.*
 
-internal enum MdSourceDragUnit {
-    Character, Word, Line
-}
-
 internal class MdSourceDrag(
     val anchor: MarkdownPosition,
     val initial: MarkdownRange,
-    val unit: MdSourceDragUnit,
+    val unit: MdTextDragUnit,
     var windowPoint: Point
 ) {
     var waiting = false
@@ -27,7 +23,7 @@ internal class MdSourceDrag(
 private fun mdSourceDragRange(
     host: MarkdownSourceHost,
     position: MarkdownPosition,
-    unit: MdSourceDragUnit
+    unit: MdTextDragUnit
 ): MarkdownRange =
     when (unit) {
         case Character -> MarkdownRange(position.byteOffset, position.byteOffset)
@@ -48,14 +44,7 @@ internal fun mdSourcePress(
     val position = hit.position
     host.area.requestFocus(FocusOrigin.Pointer)
     val shift = pointer.state.modifiers.shift
-    val unit =
-        if (shift || clicks < 2)
-            MdSourceDragUnit.Character
-        else
-            if (clicks == 2)
-                MdSourceDragUnit.Word
-            else
-                MdSourceDragUnit.Line
+    val unit = mdTextDragUnit(clicks, shift)
     val range = mdSourceDragRange(host, position, unit)
     val anchor =
         if (shift)
@@ -63,14 +52,14 @@ internal fun mdSourcePress(
         else
             MarkdownPosition(range.start)
     val cursor =
-        if (unit == MdSourceDragUnit.Character)
+        if (unit == MdTextDragUnit.Character)
             position
         else
             MarkdownPosition(range.end)
     mdSourceStopDrag(host)
     host.perform({ host.current.setSelection(MarkdownSelection(anchor, cursor)) }, false)
     host.cursorAffinity =
-        if (unit == MdSourceDragUnit.Character)
+        if (unit == MdTextDragUnit.Character)
             hit.affinity
         else
             TextAffinity.Upstream
@@ -101,10 +90,13 @@ internal fun mdSourceDragMove(host: MarkdownSourceHost) {
     val hit =
         host.hitTest(
             Point(
-                max(visible.offset.x, min(point.x, visible.offset.x + visible.viewport.width)),
                 max(
-                    visible.offset.y,
-                    min(point.y, visible.offset.y + visible.viewport.height - 0.5)
+                    frame.scroll.presentationOffset.x,
+                    min(point.x, frame.scroll.presentationOffset.x + visible.viewport.width)
+                ),
+                max(
+                    frame.scroll.presentationOffset.y,
+                    min(point.y, frame.scroll.presentationOffset.y + visible.viewport.height - 0.5)
                 )
             )
         ) ?:
@@ -112,7 +104,7 @@ internal fun mdSourceDragMove(host: MarkdownSourceHost) {
     val at = hit.position
     val range = mdSourceDragRange(host, at, drag.unit)
     val selected =
-        if (drag.unit == MdSourceDragUnit.Character)
+        if (drag.unit == MdTextDragUnit.Character)
             MarkdownSelection(drag.anchor, at)
         else
             if (range.start < drag.initial.start)
@@ -131,8 +123,8 @@ private fun mdSourceDragDelta(host: MarkdownSourceHost): Point {
     val point = host.area.toLocal(drag.windowPoint) ?: return Point(0.0, 0.0)
     val frame = host.accepted ?: return Point(0.0, 0.0)
     val visible = frame.scrollSnapshot
-    val x = point.x - visible.offset.x
-    val y = point.y - visible.offset.y
+    val x = point.x - frame.scroll.presentationOffset.x
+    val y = point.y - frame.scroll.presentationOffset.y
     val dx =
         if (host.options.wrap)
             0.0

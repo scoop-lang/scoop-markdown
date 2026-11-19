@@ -1,0 +1,65 @@
+package scoop.examples.markdown.editor
+
+import scoop.platform.fs.*
+import scoop.test.*
+import scoop.window.*
+
+internal fun editorReuseStep(p: EditorFeatureProbe, active: ActiveApplication) {
+    val documents = p.documents
+    val first = p.directory.resolve(Path.fromString("first.md"))
+    val second = p.directory.resolve(Path.fromString("second.md"))
+    val third = p.directory.resolve(Path.fromString("third.md"))
+    when (p.phase) {
+        case 0 -> p.next {
+            first.writeText("first document")
+            second.writeText("second document")
+            third.writeText("third document")
+            documents.open(first, Some(p.root))
+        }
+        case 1 -> {
+            assertEquals(1L, documents.windows.size)
+            assertTrue(documents.windows[0L] === p.first!!)
+            assertEquals(Some(first), p.root.document.file)
+            assertEquals(1, editorProbeControl(p, "first.md", 4))
+            assertFalse(p.root.editor.isDirty)
+            assertFalse(p.root.editor.canUndo)
+            p.next { p.second = documents.newDocument() }
+        }
+        case 2 -> p.next { documents.open(second, Some(p.root)) }
+        case 3 -> {
+            assertEquals(2L, documents.windows.size)
+            assertEquals(Some(second), p.second!!.document.file)
+            assertEquals("second document", p.second!!.document.editor.snapshot.toMarkdown())
+            p.next { p.empty = documents.newDocument() }
+        }
+        case 4 -> p.next {
+            val editor = p.empty!!.document.editor
+            editor.replaceSelection("changed")
+            assertTrue(editor.undo())
+            assertEquals("", editor.snapshot.toMarkdown())
+            assertTrue(editor.isDirty)
+            documents.open(third, p.empty!!.root)
+        }
+        case 5 -> {
+            assertEquals(4L, documents.windows.size)
+            assertEquals(None, p.empty!!.document.file)
+            assertTrue(p.empty!!.document.editor.isDirty)
+            assertEquals(Some(third), documents.findFile(third)!!.document.file)
+            p.next { documents.open(first, p.empty!!.root) }
+        }
+        case 6 -> {
+            assertEquals(4L, documents.windows.size)
+            assertTrue(documents.findFile(first)!! === p.first!!)
+            p.next {
+                documents.open(p.directory.resolve(Path.fromString("missing.md")), p.empty!!.root)
+            }
+        }
+        case 7 -> {
+            assertEquals(4L, documents.windows.size)
+            assertEquals(None, p.empty!!.document.file)
+            assertEquals("", p.empty!!.document.editor.snapshot.toMarkdown())
+            p.finish(active)
+        }
+        else -> fail(Some("Unexpected document reuse step"))
+    }
+}

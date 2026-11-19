@@ -8,6 +8,7 @@ import scoop.platform.process.*
 import scoop.ui.*
 import scoop.ui.markdown.*
 import scoop.window.*
+import scoop.window.accessibility.SemanticProperties
 import scoop.url.*
 
 private class PreviewWindow(
@@ -17,6 +18,13 @@ private class PreviewWindow(
     val documentUri: String,
     scope: ComponentScope
 ): Component(scope) {
+    private val options =
+        MarkdownPreviewOptions(
+            interaction =
+                MarkdownInteractionOptions(
+                    semantics = SemanticProperties(name = Some("Markdown preview"))
+                )
+        )
     private val parser =
         scope.resource { MarkdownParseController(editor, workers, scope.application.proxy()) }
     private val images =
@@ -24,6 +32,7 @@ private class PreviewWindow(
     public override fun render(): View =
         markdownPreview(
             parser,
+            options = options,
             onOpenLink = { destination -> println(destination) },
             images = Some(images),
             documentUri = documentUri

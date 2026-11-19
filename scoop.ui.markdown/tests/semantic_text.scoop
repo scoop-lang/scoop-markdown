@@ -1,0 +1,87 @@
+package scoop.ui.markdown
+
+import scoop.markdown.*
+import scoop.test.*
+
+@Test
+private class MarkdownSemanticTextTests {
+    @Test
+    fun regionalSourcePublishesOnlyItsTextAndMapsBothDirections() {
+        val snapshot = MarkdownDocument.fromText("before 中文 after").snapshot()
+        val text = MdSemanticText.forSource(snapshot, MarkdownRange(7L, 13L))
+        assertEquals("中文", text.text)
+        assertEquals(MarkdownPosition(10L), text.source(3L, MarkdownBias.After))
+        assertEquals(3L, text.offset(MarkdownPosition(10L), MarkdownBias.Before))
+        assertEquals(0L, text.offset(MarkdownPosition(0L), MarkdownBias.Before))
+        assertEquals(6L, text.offset(MarkdownPosition(snapshot.byteLength), MarkdownBias.After))
+    }
+
+    @Test
+    fun previewMapsDecodedEntitiesFormattingAndBlockSeparators() {
+        val document = MarkdownDocument.fromText("## 中文\n\nA **&amp; B**\n\nTail")
+        val parsed = document.parse()
+        val model = MarkdownParsedDocument(parsed, None, MarkdownParseOptions())
+        val text = MdSemanticText.forPreview(parsed.snapshot, parsed.root.range, model)
+        assertEquals("中文\nA & B\nTail", text.text)
+        assertEquals(MarkdownPosition(3L), text.source(0L, MarkdownBias.After))
+        assertEquals(MarkdownPosition(6L), text.source(3L, MarkdownBias.After))
+        val entity = text.source(9L, MarkdownBias.After)
+        assertEquals(
+            "&amp;",
+            document.snapshot().read(MarkdownRange(entity.byteOffset, entity.byteOffset + 5L))
+        )
+        assertEquals(9L, text.offset(entity, MarkdownBias.After))
+        assertEquals(
+            text.text.byteLength,
+            text.offset(MarkdownPosition(parsed.snapshot.byteLength), MarkdownBias.After)
+        )
+    }
+
+    @Test
+    fun semanticSelectionsPreserveDirectionWithoutHiddenMarkersOrParagraphEndings() {
+        val document = MarkdownDocument.fromText("one **two** 中文\n\none **two** 中文\n\n")
+        val parsed = document.parse()
+        val model = MarkdownParsedDocument(parsed, None, MarkdownParseOptions())
+        val text = MdSemanticText.forPreview(parsed.snapshot, parsed.root.range, model)
+        assertEquals(MarkdownRange(12L, 18L), text.selection(8L, 14L).range)
+        assertEquals(MarkdownPosition(18L), text.selection(14L, 8L).anchor)
+        assertEquals(MarkdownPosition(12L), text.selection(14L, 8L).cursor)
+        assertEquals(MarkdownRange(6L, 9L), text.selection(4L, 7L).range)
+        assertEquals(MarkdownRange(18L, 20L), text.selection(14L, 15L).range)
+        assertEquals(MarkdownPosition(18L), text.selection(14L, 14L).cursor)
+        assertTrue(text.selection(14L, 14L).collapsed)
+        assertEquals(MarkdownPosition(20L), text.selection(15L, 15L).cursor)
+    }
+
+    @Test
+    fun richProjectionExposesCurrentTextBeforeTheBackgroundParse() {
+        val document = MarkdownDocument.fromText("Title\n\n__A &amp; B__\n\nTail")
+        val parsed = document.parse()
+        val model = MarkdownParsedDocument(parsed, None, MarkdownParseOptions())
+        val before = parsed.inlineContent(parsed.root.children[1L].id)
+        val edit = before.replaceText(MarkdownRange(2L, 3L), "😀")
+        edit.applyTo(document)
+        val local =
+            MdRichPresentation(
+                model,
+                edit.after,
+                1L,
+                0L,
+                MdRichChanges(model.snapshot).append(edit.change)
+            )
+        val text =
+            MdSemanticText.forPreview(
+                document.snapshot(),
+                MarkdownRange(0L, document.snapshot().byteLength),
+                model,
+                Some(local)
+            )
+        assertEquals("Title\nA 😀 B\nTail", text.text)
+        val at = text.source(8L, MarkdownBias.After)
+        assertEquals(
+            "😀",
+            document.snapshot().read(MarkdownRange(at.byteOffset, at.byteOffset + 4L))
+        )
+        assertEquals(8L, text.offset(at, MarkdownBias.After))
+    }
+}

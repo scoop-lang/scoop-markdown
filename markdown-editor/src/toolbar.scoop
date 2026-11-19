@@ -111,7 +111,8 @@ internal fun EditorWindow.toolbar(): View {
                 }
                 item(owner.modeControl()) { shrink = 0.0 }
                 item(editorDivider(true)) { shrink = 0.0 }
-                item(owner.formatMenu()) { shrink = 0.0 }
+                if (owner.formattingVisible)
+                    item(owner.formattingControls()) { shrink = 0.0 }
                 item(editorIconButton(searchIcon, "查找 · ⌘F", { owner.search.show() })) {
                     shrink = 0.0
                 }

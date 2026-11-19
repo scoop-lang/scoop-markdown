@@ -202,6 +202,8 @@ MarkdownTextContent 及其 edit builder 也支持 setStyle；styleState 使用�
 
 实现只解析输入片段及目标局部区域，复用现有行内生成、容器前缀、表格写入和源码差量。`after` 与 change.after 是同一份最终不可变快照；UI 可直接接管已准备的解析结果，不在发布边界重复解析。失败不修改文档或历史。
 
+`MarkdownSyntax.moveMarkdown(range, position)` 将当前源码选区表示的 Markdown 片段移动到同一快照的源码落点，返回单个 `MarkdownFragmentEdit`。区内及两端落点为无正文变化的结果；其他落点先准备语义删除，再沿差量映射位置并插入原片段，保留格式、容器及引用语义。两步准备不发布中间快照，最终改动和选择可作为一个历史项应用。位置与范围必须属于当前语法快照，不使用旧解析移动新正文。
+
 ### 8.7 行内代码、链接与图片编辑
 
 MarkdownInlineContent 与 MarkdownTextContent 提供 `setCode(range, enabled)`、`codeState(range, bias)`，范围为显示 UTF-8 字节。转换保留可见文字、原有粗斜体及链接；软／硬换行和文字中的 CR／LF 是代码样式边界，不跨这些边界合并代码 span。图片、HTML、公式、脚注引用及自定义扩展等原子对象保持原样。跨块操作按相交行内块执行并保持容器与表格；反引号长度和 padding 使用现有生成器，无法由 GFM 代码单元格保留的反斜杠加竖线组合照常失败。状态使用 MarkdownStyleState，纯原子对象选区为 Unavailable；折叠位置允许为后续输入查询状态。两个 edit builder 同样提供 setCode，不改变已有 insertedRange。

@@ -1,0 +1,213 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.markdown.*
+import scoop.math.max
+import scoop.math.min
+import scoop.platform.time.MonotonicTimeSource
+import scoop.surface.*
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.window.*
+
+internal class MdTextDrop(private val target: MdTextTarget): Closeable {
+    private var closed = false
+    private var point: Point? = None
+    private var position: MarkdownPosition? = None
+    private var snapshot: MarkdownSnapshot? = None
+    private var effect: DragEffect? = None
+    private var source: MdTextTransfer? = None
+    private var waiting = false
+    private val timer = target.scope.createDeadline { tick() }
+    private val handlers =
+        DropAreaHandlers(
+            { value, local -> offer(value, local) },
+            { request, local -> receive(request, local) },
+            { clear() }
+        )
+    private val binding = target.scope.dropTarget(target.area, handlers, enabled)
+    private val enabled: Boolean get() =
+        !closed &&
+            target.enabled &&
+            !target.readOnly &&
+            target.options.acceptDrops &&
+            target.scope.isMounted &&
+            target.area.scope.isInputAllowed
+    private fun locate(local: Point): MarkdownPosition? {
+        if (!enabled || !target.ready())
+            return None
+        val receiver = target
+        if (receiver is MdPreviewTarget && receiver.host.hitTest(local)?.generated == Some(true))
+            return None
+        val value = target.hit(local) ?: return None
+        return if (value.byteOffset >= target.range.start && value.byteOffset <= target.range.end)
+            Some(value)
+        else
+            None
+    }
+    private fun offer(value: DropOffer, local: Point): DropDecision {
+        val next = locate(local)
+        val origin = mdDropSource(value.localData)
+        val operation = mdDropEffect(value, origin)
+        val format =
+            if (value.formats.text)
+                Some(DragFormat.Text)
+            else
+                if (value.formats.url)
+                    Some(DragFormat.Url)
+                else
+                    None
+        if (next == None || operation == None || format == None) {
+            clear()
+            return DropDecision.Reject
+        }
+        position = next
+        point = Some(Point(value.position.x, value.position.y))
+        snapshot = Some(target.editor.snapshot)
+        source = origin
+        effect = operation
+        schedule()
+        return DropDecision.Accept(format!!, operation!!)
+    }
+    private fun receive(request: DropRequest, local: Point): Boolean {
+        val at = locate(local) ?: return false
+        if (effect != Some(request.effect) || !mdSameSnapshot(snapshot, target.editor.snapshot))
+            return false
+        val origin = source
+        val supplied = mdDropSource(request.offer.localData)
+        if (!mdSameTransfer(origin, supplied))
+            return false
+        val text =
+            when (request.content) {
+                case Text(val value) -> value
+                case Url(val value) -> value
+                case Files(_) -> return false
+            }
+        if (origin?.content?.plain != None && origin!!.content.plain != text)
+            return false
+        clear()
+        val editor = target.editor
+        var changed = false
+        when (origin) {
+            case Some(val value) -> if (request.effect == DragEffect.Move) {
+                if (!value.canMove)
+                    return false
+                if (value.editor === editor) {
+                    changed = target.move(value.selection.range, at)
+                    if (changed)
+                        value.moved = true
+                } else {
+                    changed =
+                        target.replace(
+                            MarkdownRange(at.byteOffset, at.byteOffset),
+                            value.content.markdown,
+                            true
+                        )
+                }
+            } else {
+                changed =
+                    target.replace(
+                        MarkdownRange(at.byteOffset, at.byteOffset),
+                        value.content.markdown,
+                        true
+                    )
+            }
+            case None -> changed = target.replace(MarkdownRange(at.byteOffset, at.byteOffset), text)
+        }
+        if (changed && enabled && target.editor === editor)
+            target.area.requestFocus(FocusOrigin.Pointer)
+        return changed
+    }
+    fun update() {
+        if (closed)
+            return
+        if (!enabled || !mdSameSnapshot(snapshot, target.editor.snapshot))
+            clear()
+        binding.update(handlers, enabled)
+    }
+    fun scene(context: SceneContext, color: Color, caret: (MarkdownPosition) -> Rect?) {
+        if (!enabled || binding.hover == None || !mdSameSnapshot(snapshot, target.editor.snapshot))
+            return
+        val at = position ?: return
+        val rect = caret(at) ?: return
+        context.draw { paint -> paint.canvas.drawRect(rect, Paint(color)) }
+    }
+    private fun delta(): Point {
+        val point = point ?: return Point(0.0, 0.0)
+        val bounds = target.area.visibleBounds ?: return Point(0.0, 0.0)
+        val x =
+            if (!target.axes.horizontal)
+                0.0
+            else
+                if (point.x < bounds.x + 20.0)
+                    max(-24.0, (point.x - bounds.x - 20.0) * 0.5)
+                else
+                    if (point.x > bounds.x + bounds.width - 20.0)
+                        min(24.0, (point.x - bounds.x - bounds.width + 20.0) * 0.5)
+                    else
+                        0.0
+        val y =
+            if (point.y < bounds.y + 20.0)
+                max(-24.0, (point.y - bounds.y - 20.0) * 0.5)
+            else
+                if (point.y > bounds.y + bounds.height - 20.0)
+                    min(24.0, (point.y - bounds.y - bounds.height + 20.0) * 0.5)
+                else
+                    0.0
+        return Point(x, y)
+    }
+    private fun schedule() {
+        if (!enabled || waiting || delta() == Point(0.0, 0.0)) {
+            timer.cancel();
+            return
+        }
+        if (!timer.isScheduled)
+            timer.schedule(MonotonicTimeSource.markNow() + Duration.milliseconds(16L))
+    }
+    private fun tick() {
+        if (!enabled || binding.hover == None) {
+            clear();
+            return
+        }
+        if (target.viewport.state.scrollBy(delta(), ScrollOrigin.User) != Point(0.0, 0.0))
+            waiting = true
+    }
+    fun accepted() {
+        if (closed)
+            return
+        waiting = false
+        val windowPoint = point ?: return
+        val local = target.area.toLocal(windowPoint) ?: return
+        position = locate(local)
+        if (position == None) {
+            clear();
+            return
+        }
+        schedule()
+    }
+    private fun clear() {
+        point = None
+        position = None
+        snapshot = None
+        effect = None
+        source = None
+        waiting = false
+        timer.cancel()
+    }
+    public override fun close() {
+        if (closed)
+            return
+        closed = true
+        clear()
+        var failure = mdCleanup(None) { binding.close() }
+        failure = mdCleanup(failure) { timer.close() }
+        mdThrow(failure)
+    }
+}
+
+private fun mdSameTransfer(a: MdTextTransfer?, b: MdTextTransfer?): Boolean =
+    when ((a, b)) {
+        case(Some(val a), Some(val b)) -> a === b
+        case(None, None) -> true
+        else -> false
+    }

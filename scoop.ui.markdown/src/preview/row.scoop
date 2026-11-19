@@ -4,6 +4,7 @@ import scoop.graphics.*
 import scoop.graphics.text.*
 import scoop.markdown.*
 import scoop.math.max
+import scoop.math.min
 import scoop.ui.*
 
 internal class MdPreviewCellResource(val text: MdPreviewText, val origin: Point, val width: Double)
@@ -87,8 +88,8 @@ internal class MdPreviewRowCache: Closeable {
                 fontRevision ==
                 nextFonts.revision &&
                 sameStyle &&
-                options ==
-                Some(host.options) &&
+                options?.sameLayout(host.options) ==
+                Some(true) &&
                 this.width ==
                 width &&
                 direction ==
@@ -134,8 +135,15 @@ internal fun mdPreviewBuildRow(
     val options = host.options
     val style = host.style
     val base = mdPreviewBase(style, row.kind)
-    val left = row.indent.toDouble() * options.indent
-    val available = max(40.0, width - left)
+    val left = mdPreviewIndent(row, width, options)
+    val available =
+        max(
+            if (options.wrapLongLines)
+                1.0
+            else
+                40.0,
+            width - left
+        )
     val cells = ArrayList<MdPreviewCellResource>()
     val labels = ArrayList<MdPreviewLabelResource>()
     val code =
@@ -147,6 +155,12 @@ internal fun mdPreviewBuildRow(
     val table =
         when (row.kind) {
             case MdDisplayKind.Table(_, _) -> true;
+            else -> false
+        }
+    val prose =
+        when (row.kind) {
+            case MdDisplayKind.Paragraph -> true
+            case MdDisplayKind.Heading(_) -> true
             else -> false
         }
     val top =
@@ -198,7 +212,10 @@ internal fun mdPreviewBuildRow(
                 }
             val inset =
                 if (code || table)
-                    6.0
+                    if (options.wrapLongLines)
+                        min(6.0, columnWidth / 4.0)
+                    else
+                        6.0
                 else
                     0.0
             val text =
@@ -208,7 +225,7 @@ internal fun mdPreviewBuildRow(
                     style,
                     base,
                     settings,
-                    if (code)
+                    if ((code && !options.wrapLongLines) || (prose && !options.wrapProse))
                         None
                     else
                         Some(max(1.0, columnWidth - inset * 2.0)),

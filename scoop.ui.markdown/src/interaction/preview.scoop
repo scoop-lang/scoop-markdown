@@ -1,0 +1,295 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.markdown.*
+import scoop.surface.*
+import scoop.ui.*
+import scoop.window.*
+
+internal class MdPreviewTarget(val host: MarkdownPreviewHost): MdTextTarget {
+    public override val scope: ComponentScope get() = host.scope
+    public override val area: InputArea get() = host.area
+    public override val focus: FocusTarget get() = host.focus
+    public override val editor: MarkdownEditorState get() = host.editor
+    public override val options: MarkdownInteractionOptions get() = host.options.interaction
+    public override val enabled: Boolean get() = !host.closed && host.options.enabled
+    public override val readOnly: Boolean get() = host.rich?.readOnly ?: true
+    public override val source: Boolean get() = host.rich?.editingSource ?: false
+    public override val range: MarkdownRange get() {
+        val region = host.rich?.sourceRegion ?: None
+        return (region?.range ?: None) ?: MarkdownRange(0L, editor.snapshot.byteLength)
+    }
+    public override val viewport: ScrollViewport get() = host.viewport
+    public override val axes: ScrollAxes get() = ScrollAxes.Both
+    public override val lineStep: Double get() = host.style.text.fontSize
+    public override val color: Color get() = host.style.text.color
+    public override val name: String get() =
+        if (readOnly)
+            "Markdown preview"
+        else
+            "Markdown editor"
+    public override fun ready(): Boolean =
+        !host.closed &&
+            when (host.currentFrame()) {
+                case Some(_) -> true
+                case None -> false
+            }
+    public override fun hit(point: Point): MarkdownPosition? = host.hitTest(point)?.position
+    public override fun caret(position: MarkdownPosition): Rect? = host.caret(position)
+
+    public override fun word(point: Point, line: Boolean): MarkdownRange? {
+        val frame = host.currentFrame() ?: return None
+        val hit = frame.hit(point) ?: return None
+        val row = mdFrameRowAt(hit.document, frame.presentation, hit.position, MarkdownBias.After)
+        val measured = frame.row(row) ?: return None
+        if (hit.cellIndex >= measured.resource.cells.size)
+            return Some(hit.sourceRange)
+        val cell = measured.resource.cells[hit.cellIndex]
+        val text = measured.row.cells[hit.cellIndex]
+        val position = cell.text.display.toDisplay(hit.textPosition)
+        val selected =
+            if (line)
+                cell.text.layout.logicalLineRange(position) ?: return None
+            else
+                cell.text.layout.wordRange(position)
+        val first = cell.text.display.toDocument(TextPosition(selected.start))
+        val last = cell.text.display.toDocument(TextPosition(selected.end, TextAffinity.Upstream))
+        val a =
+            mdFrameCellOriginal(
+                hit.document,
+                frame.presentation,
+                row,
+                hit.cellIndex,
+                text.sourceAt(first.byteOffset, MarkdownBias.After),
+                MarkdownBias.After
+            )
+        val b =
+            mdFrameCellOriginal(
+                hit.document,
+                frame.presentation,
+                row,
+                hit.cellIndex,
+                text.sourceAt(last.byteOffset, MarkdownBias.Before),
+                MarkdownBias.Before
+            )
+        return Some(MarkdownSelection(a, b).range)
+    }
+
+    public override fun selectionBoxes(range: MarkdownRange): Array<Rect> {
+        val frame = host.currentFrame() ?: return []
+        val result = ArrayList<Rect>()
+        for (row in frame.rows)
+            for (index in 0L ..< row.resource.cells.size) {
+                val cell = row.resource.cells[index]
+                val text = row.row.cells[index]
+                val a =
+                    mdFrameCellPosition(
+                        frame.document!!,
+                        frame.presentation,
+                        row.index,
+                        index,
+                        MarkdownPosition(range.start),
+                        MarkdownBias.Before
+                    ).byteOffset
+                val b =
+                    mdFrameCellPosition(
+                        frame.document!!,
+                        frame.presentation,
+                        row.index,
+                        index,
+                        MarkdownPosition(range.end),
+                        MarkdownBias.After
+                    ).byteOffset
+                val start =
+                    if (a > text.sourceRange.start)
+                        a
+                    else
+                        text.sourceRange.start
+                val end =
+                    if (b < text.sourceRange.end)
+                        b
+                    else
+                        text.sourceRange.end
+                if (start >= end)
+                    continue
+                val display =
+                    cell.text.display.displayRange(
+                        Utf8Range(
+                            text.textAt(start, MarkdownBias.Before),
+                            text.textAt(end, MarkdownBias.After)
+                        )
+                    )
+                for (box in cell.text.layout.selection(display))
+                    result.add(
+                        Rect(
+                            box.rect.x + frame.contentX + cell.origin.x,
+                            box.rect.y +
+                                frame.padding +
+                                frame.heights.prefix(row.index) +
+                                cell.origin.y,
+                            box.rect.width,
+                            box.rect.height
+                        )
+                    )
+            }
+        return result.toArray()
+    }
+
+    public override fun select(value: MarkdownSelection, reveal: Boolean) {
+        perform { editor.setSelection(value) }
+        if (reveal)
+            host.reveal(value.cursor)
+    }
+    public override fun tap(point: Point, count: Int): Boolean {
+        if (count == 1 && mdPreviewFoldPress(host, point))
+            return true
+        val hit = host.hitTest(point) ?: return false
+        if (count == 1 && readOnly && hit.action != None) {
+            host.activate(hit)
+            return true
+        }
+        val value =
+            if (count < 2)
+                MarkdownSelection(hit.position, hit.position)
+            else
+                mdTextSelection(word(point, count > 2) ?: return false)
+        select(value, true)
+        when (host.rich) {
+            case Some(val rich) -> {
+                rich.cursorAffinity = hit.affinity
+                rich.preferredX = None
+                if (count == 1 && !readOnly) {
+                    when (hit.action) {
+                        case Some(MdDisplayAction.Navigate(_)) -> host.activate(hit)
+                        case Some(MdDisplayAction.Source(_)) -> mdRichSourceHit(rich, hit)
+                        else -> Unit
+                    }
+                }
+            }
+            case None -> Unit
+        }
+        return true
+    }
+    public override fun stopSelecting() {
+        host.drag = None
+        host.pressed = None
+        when (host.rich) {
+            case Some(val rich) -> rich.deferSourceActivation = false
+            case None -> Unit
+        }
+    }
+    public override fun execute(command: TextEditCommand): Boolean =
+        when (host.rich) {
+            case Some(val rich) -> rich.execute(command)
+            case None -> host.execute(command)
+        }
+    public override fun perform(action: () -> Unit) {
+        when (host.rich) {
+            case Some(val rich) -> rich.perform { action() }
+            case None -> {
+                action();
+                scope.requestLayout()
+            }
+        }
+    }
+    public override fun replace(range: MarkdownRange, text: String, markdown: Boolean): Boolean {
+        if (!enabled || readOnly || range.start < this.range.start || range.end > this.range.end)
+            return false
+        if (source) {
+            perform { editor.replace(range, text) }
+            return true
+        }
+        val rich = host.rich ?: return false
+        val syntax = syntax(mdTextSelection(range)) ?: return false
+        if (syntax.snapshot !== editor.snapshot)
+            return false
+        if (markdown) {
+            val edit = syntax.replaceMarkdown(range, text)
+            mdRichStructure(rich, MdRichStructureEdit(edit.change, edit.after, edit.selection))
+        } else {
+            val content = syntax.textContent(range)
+            val a = content.text.textAt(MarkdownPosition(range.start), MarkdownBias.Before)
+            val b = content.text.textAt(MarkdownPosition(range.end), MarkdownBias.After)
+            val edit = content.replaceText(MarkdownRange(a.byteOffset, b.byteOffset), text)
+            rich.perform {
+                editor.apply(edit.change, edit.selection)
+                when (edit.after.region) {
+                    case Some(val region) -> rich.local?.prepared(region)
+                    case None -> Unit
+                }
+            }
+        }
+        host.reveal(editor.selection.cursor)
+        return true
+    }
+    public override fun export(): MdTextExport? {
+        if (!mdTextCanCopy(this))
+            return None
+        if (source) {
+            val text = editor.snapshot.read(editor.selection.range)
+            return Some(MdTextExport(text, text))
+        }
+        val model = mdPresentationModel(host.presentation, host.controller.current) ?: return None
+        val syntax = syntax(editor.selection) ?: return None
+        if (syntax.snapshot !== editor.snapshot)
+            return None
+        return Some(
+            MdTextExport(
+                mdPreviewSelectedText(model, editor.selection.range, host.presentation),
+                syntax.exportMarkdown(editor.selection.range)
+            )
+        )
+    }
+    public override fun reveal(position: MarkdownPosition) {
+        host.reveal(position)
+    }
+    public override fun move(range: MarkdownRange, position: MarkdownPosition): Boolean {
+        if (
+            !enabled ||
+                readOnly ||
+                range.start <
+                this.range.start ||
+                range.end >
+                this.range.end ||
+                position.byteOffset <
+                this.range.start ||
+                position.byteOffset >
+                this.range.end
+        )
+            return false
+        if (source) {
+            val edit = mdSourceMoveSelection(editor.snapshot, range, position)
+            perform { editor.apply(edit.change, edit.selection) }
+            return true
+        }
+        val rich = host.rich ?: return false
+        val start =
+            if (position.byteOffset < range.start)
+                position.byteOffset
+            else
+                range.start
+        val end =
+            if (position.byteOffset > range.end)
+                position.byteOffset
+            else
+                range.end
+        val syntax = syntax(mdTextSelection(MarkdownRange(start, end))) ?: return false
+        if (syntax.snapshot !== editor.snapshot)
+            return false
+        val edit = syntax.moveMarkdown(range, position)
+        mdRichStructure(rich, MdRichStructureEdit(edit.change, edit.after, edit.selection))
+        return true
+    }
+    private fun syntax(selection: MarkdownSelection): MarkdownSyntax? {
+        val state = host.rich?.local ?: None
+        val local = state?.syntax(selection) ?: None
+        return when (local) {
+            case Some(val value) -> Some(value)
+            case None -> when (host.controller.current) {
+                case Some(val value) -> Some(value.source)
+                case None -> None
+            }
+        }
+    }
+}

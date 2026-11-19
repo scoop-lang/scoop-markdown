@@ -3,7 +3,7 @@ package scoop.ui.markdown
 import scoop.graphics.*
 import scoop.graphics.text.TextAffinity
 import scoop.surface.*
-import scoop.ui.ScrollOrigin
+import scoop.ui.*
 import scoop.window.*
 
 internal fun mdSourceEvent(
@@ -12,6 +12,9 @@ internal fun mdSourceEvent(
     event: InputEvent
 ) {
     if (host.closed || !host.scope.isMounted)
+        return
+    // Shared gesture defaults still receive the press and its threshold movement.
+    if (host.interactions.handle(context, event))
         return
     if (context.phase == RoutedPhase.Notification) {
         when (event) {
@@ -77,25 +80,19 @@ internal fun mdSourceEvent(
             }
             case None -> Unit
         }
-        case Pointer(InputPointerEvent.Wheel(_, _, _, _)) -> {
+        case Pointer(InputPointerEvent.Wheel(_, _, val phase, val momentum)) -> {
             host.revealNeeded = false
             host.anchor = None
-            host.scroll.cancelAnimation()
-            context.consumeScroll(host.style.text.fontSize) {
-                amount ->
-                val consumed =
-                    host.scroll.scrollBy(
-                        Point(
-                            if (host.options.wrap)
-                                0.0
-                            else
-                                -amount.x,
-                            -amount.y
-                        ),
-                        ScrollOrigin.User
-                    )
-                Point(-consumed.x, -consumed.y)
-            }
+            host.viewport.consumeScroll(
+                context,
+                host.style.text.fontSize,
+                if (host.options.wrap)
+                    ScrollAxes.Vertical
+                else
+                    ScrollAxes.Both,
+                phase = phase,
+                momentumPhase = momentum
+            )
         }
         else -> Unit
     }

@@ -13,6 +13,9 @@ import scoop.tests.window.*
 import scoop.text.repeat
 import scoop.time.Duration
 import scoop.ui.*
+import scoop.ui.component.*
+import scoop.ui.text.*
+import scoop.window.accessibility.SemanticProperties
 import scoop.ui.markdown.*
 import scoop.window.*
 
@@ -20,36 +23,73 @@ import scoop.window.*
 private class MarkdownViewportWindowTests {
     @Test
     fun scrollbarsAndSystemCursorsFollowSourcePreviewAndRichViewports() {
-        val app = Application()
-        val workers =
-            multiThreadExecutor {
-                workers = 1;
-                blocking { threads = 1 }
-            }
-        val probe = MdViewportProbe(workers, app.proxy())
-        try {
-            UiHost { host, active, event -> probe.event(host, active, event) }.use {
-                host -> app.run(host)
-            }
-            assertTrue(probe.finished)
-        } catch (failure: Throwable) {
-            println(
-                "Viewport kind=" + probe.kind.toString() + " step=" + probe.step.value.toString()
-            )
-            throw failure
-        } finally {
-            probe.close()
-            workers.close()
-        }
+        mdRunViewportProbe(MdViewportTest.Scrollbars)
     }
 }
 
-private class MdViewportProbe(workers: CoroutineExecutor, proxy: ApplicationProxy): Closeable {
-    val original = ("Long source line with selectable text. ".repeat(24L) + "\n\n").repeat(60L)
+internal enum MdViewportTest {
+    Scrollbars, Interactions, Pointer
+}
+
+internal fun mdRunViewportProbe(scenario: MdViewportTest) {
+    val app = Application()
+    val workers =
+        multiThreadExecutor {
+            workers = 1;
+            blocking { threads = 1 }
+        }
+    val probe = MdViewportProbe(workers, app.proxy(), scenario)
+    try {
+        UiHost { host, active, event -> probe.event(host, active, event) }.use {
+            host -> app.run(host)
+        }
+        assertTrue(probe.finished)
+    } catch (failure: Throwable) {
+        println("Viewport kind=" + probe.kind.toString() + " step=" + probe.step.value.toString())
+        throw failure
+    } finally {
+        probe.close()
+        workers.close()
+    }
+}
+
+internal class MdViewportProbe(
+    workers: CoroutineExecutor,
+    proxy: ApplicationProxy,
+    val scenario: MdViewportTest
+): Closeable {
+    val interactions: Boolean get() = scenario == MdViewportTest.Interactions
+    val original =
+        if (scenario != MdViewportTest.Scrollbars)
+            "one **two** 中文\n\n".repeat(60L)
+        else
+            ("Long source line with selectable text. ".repeat(24L) + "\n\n").repeat(60L)
     val editor = MarkdownEditorState(MarkdownDocument.fromText(original))
     val parser = MarkdownParseController(editor, workers, proxy)
     val sourceStyle = MarkdownSourceStyle()
     val previewStyle = MarkdownPreviewStyle()
+    val interaction =
+        MarkdownInteractionOptions(
+            contextMenu =
+                textContextMenu {
+                    mode = TextContextMenuMode.StandardNative
+                    labels =
+                        Some(
+                            TextContextMenuLabels(
+                                Some("MD Undo"),
+                                Some("MD Redo"),
+                                Some("MD Cut"),
+                                Some("MD Copy"),
+                                Some("MD Paste"),
+                                Some("MD Delete"),
+                                Some("MD Select All")
+                            )
+                        )
+                },
+            touch = TextTouchOptions(multiTapInterval = Some(Duration.seconds(10L))),
+            scrollbarBehavior = scrollbarBehavior { preset = ScrollbarPreset.Static },
+            semantics = SemanticProperties(automationId = Some("markdown-interactions"))
+        )
     val step = state(0)
     var kind = 0
     var enabled = true
@@ -62,12 +102,16 @@ private class MdViewportProbe(workers: CoroutineExecutor, proxy: ApplicationProx
     var waiting = false
     var finished = false
     var selection = editor.selection
+    var interactionRevision = -1L
+    var openedLinks = 0
     val width = 400.0
     val height = 240.0
 
     fun event(host: UiHost, active: ActiveApplication, event: ApplicationEvent) {
         when (event) {
             case Resumed -> {
+                if (interactions)
+                    mdObserveInteractionMenus()
                 val windowSize = LogicalSize(width, height)
                 val native =
                     active.createWindow(
@@ -84,7 +128,16 @@ private class MdViewportProbe(workers: CoroutineExecutor, proxy: ApplicationProx
                 parser.start()
                 native.createDeadline {
                     fail(
-                        Some("Viewport timeout at " + kind.toString() + ":" + step.value.toString())
+                        Some(
+                            "Viewport timeout at " +
+                                kind.toString() +
+                                ":" +
+                                step.value.toString() +
+                                " selection=" +
+                                editor.selection.anchor.byteOffset.toString() +
+                                ":" +
+                                editor.selection.cursor.byteOffset.toString()
+                        )
                     )
                 }.schedule(MonotonicTimeSource.markNow() + Duration.seconds(45L))
             }
@@ -108,13 +161,14 @@ private class MdViewportProbe(workers: CoroutineExecutor, proxy: ApplicationProx
             return false
         if (!mounted)
             return frames!!.snapshot().presentations > beforeFrame
-        return accepted ==
+        return (!interactions || mdInteractionReady(this)) &&
+            accepted ==
             step.value &&
             parser.current?.snapshot?.revision ==
             Some(editor.snapshot.revision)
     }
 
-    private fun next(action: () -> Unit = {}) {
+    fun next(action: () -> Unit = {}) {
         beforeFrame = frames!!.snapshot().presentations
         action()
         step.value += 1
@@ -145,6 +199,14 @@ private class MdViewportProbe(workers: CoroutineExecutor, proxy: ApplicationProx
     }
 
     private fun advance(active: ActiveApplication) {
+        if (scenario == MdViewportTest.Pointer) {
+            mdAdvancePointer(this, active);
+            return
+        }
+        if (interactions) {
+            mdAdvanceInteractions(this, active);
+            return
+        }
         val scroll = field!!.scroll
         when (step.value) {
             case 0 -> {
@@ -230,6 +292,8 @@ private class MdViewportProbe(workers: CoroutineExecutor, proxy: ApplicationProx
     }
 
     public override fun close() {
+        if (interactions)
+            mdCloseInteractionMenus()
         frames?.close()
         parser.close()
         editor.close()
@@ -251,11 +315,11 @@ private class MdViewportRoot(val probe: MdViewportProbe, scope: ComponentScope):
     }
 }
 
-private enum MdViewportHost {
+internal enum MdViewportHost {
     Source(MarkdownSourceHost), Preview(MarkdownPreviewHost), Rich(MarkdownRichHost)
 }
 
-private enum MdViewportLayout {
+internal enum MdViewportLayout {
     Source(MarkdownSourceMeasurement), Preview(MarkdownPreviewMeasurement)
     val metrics: LayoutMetrics get() =
         when (this) {
@@ -270,12 +334,12 @@ private enum MdViewportLayout {
     }
 }
 
-private class MdViewportField(
+internal class MdViewportField(
     val probe: MdViewportProbe,
     val step: Props<Int>,
     scope: ComponentScope
 ): Element<MdViewportLayout>(scope) {
-    private val host =
+    val host =
         when (probe.kind) {
             case 0 -> MdViewportHost.Source(
                 scope.resource { MarkdownSourceHost(scope, probe.editor) }
@@ -298,21 +362,35 @@ private class MdViewportField(
         update()
     }
     public override fun update(): UiInvalidation {
+        // Equivalent option objects must preserve an in-progress touch sequence.
+        val interaction =
+            MarkdownInteractionOptions(
+                contextMenu = probe.interaction.contextMenu,
+                touch = probe.interaction.touch,
+                scrollbarBehavior = probe.interaction.scrollbarBehavior,
+                semantics = probe.interaction.semantics
+            )
         when (host) {
             case Source(val value) -> value.update(
                 probe.editor,
                 probe.sourceStyle,
-                MarkdownSourceOptions(wrap = false, enabled = probe.enabled)
+                MarkdownSourceOptions(
+                    wrap = false,
+                    enabled = probe.enabled,
+                    interaction = interaction
+                )
             )
             case Preview(val value) -> value.update(
                 probe.parser,
                 probe.previewStyle,
-                MarkdownPreviewOptions(enabled = probe.enabled)
+                MarkdownPreviewOptions(enabled = probe.enabled, interaction = interaction),
+                onOpenLink = { _ -> probe.openedLinks += 1 }
             )
             case Rich(val value) -> value.update(
                 probe.parser,
                 probe.previewStyle,
-                MarkdownPreviewOptions(enabled = probe.enabled)
+                MarkdownPreviewOptions(enabled = probe.enabled, interaction = interaction),
+                onOpenLink = { _ -> probe.openedLinks += 1 }
             )
         }
         return UiInvalidation.Layout

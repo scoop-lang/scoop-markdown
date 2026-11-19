@@ -1,0 +1,83 @@
+package scoop.ui.markdown
+
+import scoop.markdown.*
+import scoop.test.*
+import scoop.window.*
+
+@Test
+private class MarkdownNativeSelectionTests {
+    @Test
+    fun sourceNativeSelectionPreservesDirectionAndDoesNotCreateHistory() {
+        val source = "A 中文 B"
+        val editor = MarkdownEditorState(MarkdownDocument.fromText(source))
+        val input = MarkdownSourceInput(editor)
+        val revision = input.inputState.revision
+        assertTrue(
+            input.apply(
+                TextInputBatch(
+                    Some(revision),
+                    [TextInputOperation.SetSelection(Utf8Selection(8L, 2L))]
+                )
+            )
+        )
+        assertEquals(
+            MarkdownSelection(MarkdownPosition(8L), MarkdownPosition(2L)),
+            editor.selection
+        )
+        assertEquals(source, editor.document.toMarkdown())
+        assertFalse(editor.canUndo)
+        assertFailsWith<IllegalStateException> {
+            input.apply(
+                TextInputBatch(
+                    Some(revision),
+                    [TextInputOperation.SetSelection(Utf8Selection(0L, 0L))]
+                )
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            input.apply(
+                TextInputBatch(
+                    Some(input.inputState.revision),
+                    [TextInputOperation.SetSelection(Utf8Selection(3L, 3L))]
+                )
+            )
+        }
+        assertEquals(source, editor.document.toMarkdown())
+        input.close()
+        editor.close()
+    }
+
+    @Test
+    fun richNativeSelectionMapsVisibleUnicodeAndCompositionCancellationRestoresItsBaseline() {
+        val original = "A **中文** B"
+        val editor = MarkdownEditorState(MarkdownDocument.fromText(original))
+        val parsed = editor.document.parse()
+        val input = MarkdownRichInput(editor, parsed.inlineContent(parsed.root.children[0L].id))
+        input.apply(
+            TextInputBatch(
+                Some(input.inputState.revision),
+                [TextInputOperation.SetSelection(Utf8Selection(8L, 2L))]
+            )
+        )
+        val selected = editor.selection
+        assertEquals(MarkdownRange(4L, 10L), selected.range)
+        assertTrue(selected.anchor.byteOffset > selected.cursor.byteOffset)
+        assertFalse(editor.canUndo)
+        input.apply(
+            TextInputBatch(
+                Some(input.inputState.revision),
+                [
+                    TextInputOperation.Preedit("ni", None, TextReplacement.CurrentSelection),
+                    TextInputOperation.SetSelection(Utf8Selection(3L, 3L))
+                ]
+            )
+        )
+        assertTrue(editor.isComposing)
+        assertTrue(editor.cancelComposition())
+        assertEquals(original, editor.document.toMarkdown())
+        assertEquals(selected, editor.selection)
+        assertFalse(editor.canUndo)
+        input.close()
+        editor.close()
+    }
+}
