@@ -1,0 +1,111 @@
+package scoop.tests.markdown.source
+
+import scoop.graphics.*
+import scoop.markdown.*
+import scoop.surface.*
+import scoop.test.*
+import scoop.ui.*
+import scoop.ui.markdown.MarkdownSelection
+import scoop.ui.text.*
+import scoop.window.*
+
+@Test
+private class MarkdownDragPreviewWindowTests {
+    @Test
+    fun nativeSourcePreviewAndRichTextCarrySelectedInkOrTheCustomImage() {
+        mdRunViewportProbe(MdViewportTest.DragPreview)
+    }
+}
+
+internal fun mdPreviewOptions(kind: Int): TextDragOptions {
+    if (kind != 1)
+        return TextDragOptions()
+    return TextDragOptions(
+        preview =
+            Some {
+                start, text ->
+                assertEquals("one two 中文", text)
+                val rect = Rect(start.start.x - 4.0, start.start.y - 5.0, 24.0, 16.0)
+                Some(
+                    start.renderPreview(rect) {
+                        canvas -> canvas.drawRect(rect, Paint(Color(1.0, 0.0, 0.0)))
+                    }
+                )
+            }
+    )
+}
+
+internal fun mdInspectDragPreview(field: MdViewportField, event: InputEvent) {
+    val probe = field.probe
+    if (probe.step.value != 3 || probe.dragObserved)
+        return
+    when (event) {
+        case Pointer(InputPointerEvent.Moved(_)) -> Unit
+        else -> return
+    }
+    val expected =
+        if (probe.kind == 0)
+            "one **two** 中文"
+        else
+            "one two 中文"
+    mdNativeView(probe.window!!) {
+        view -> @Unsafe
+        {
+            expected.withUtf8Bytes {
+                bytes,
+                length -> @Unsafe
+                {
+                    assertEquals(0, nativePreview(view, bytes, length, probe.kind == 1))
+                }
+            }
+        }
+    }
+    probe.dragObserved = true
+    probe.enabled = false
+    field.update()
+}
+
+internal fun mdAdvanceDragPreview(probe: MdViewportProbe, active: ActiveApplication) {
+    when (probe.step.value) {
+        case 0 -> probe.next {
+            mdInteractionArea(probe.field!!).requestFocus()
+            probe.editor.setSelection(
+                MarkdownSelection(MarkdownPosition(0L), MarkdownPosition(18L))
+            )
+        }
+        case 1 -> probe.next { mdPointerButton(probe, 7L, true, 1) }
+        case 2 -> probe.next {
+            val point = mdPointerPoint(probe, 7L)
+            mdNativeView(probe.window!!) {
+                view -> @Unsafe
+                {
+                    nativeDragMove(view, point.x + 9.0, point.y)
+                }
+            }
+        }
+        case 3 -> probe.next {
+            assertTrue(probe.dragObserved)
+            assertEquals(probe.original, probe.editor.document.toMarkdown())
+            mdPointerButton(probe, 7L, false, 1)
+            probe.mounted = false
+        }
+        case 4 -> if (probe.kind == 2) {
+            probe.finished = true
+            active.requestExit()
+        } else {
+            probe.kind += 1
+            probe.enabled = true
+            probe.dragObserved = false
+            probe.accepted = -1
+            probe.mounted = true
+            probe.step.value = 0
+        }
+        else -> fail(Some("Unexpected Markdown preview step"))
+    }
+}
+
+@Extern(name = "md_test_drag_preview")
+private fun nativePreview(view: Ptr<Unit>, bytes: Ptr<UInt8>, length: Long, custom: Boolean): Int
+
+@Extern(name = "md_test_drag_move")
+private fun nativeDragMove(view: Ptr<Unit>, x: Double, y: Double)

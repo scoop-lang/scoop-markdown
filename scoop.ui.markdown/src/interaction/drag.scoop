@@ -74,6 +74,15 @@ internal class MdTextDrag(private val target: MdTextTarget): Closeable {
                 effects,
                 target.options.drag.onCompleted
             )
+        val preview =
+            target.options.drag.preparePreview(start, content.plain) {
+                start.renderSelectionPreview(
+                    target.selectionBoxes(pending.selection.range),
+                    target.area
+                ) { canvas -> target.paintDragContent(canvas) }
+            }
+        if (!valid(pending))
+            return None
         candidate = None
         target.stopSelecting()
         return Some(
@@ -81,6 +90,7 @@ internal class MdTextDrag(private val target: MdTextTarget): Closeable {
                 DragContent.Text(content.plain),
                 effects,
                 Some(transfer),
+                preview,
                 { result -> mdCompleteTextTransfer(transfer, result) }
             )
         )

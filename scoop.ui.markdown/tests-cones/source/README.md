@@ -29,3 +29,5 @@ cat /tmp/scoop-markdown-source-events/events.jsonl
 `MarkdownInteractionWindowTests` 用三个真实宿主依次验证原生无障碍内容与 UTF-16／UTF-8 选区转换、只读替换拒绝、原生菜单删除及一次撤销，以及通过生产接触事件队列的单击、双击选词和光标手柄跨行拖动。按上面的 app 方式单独启动该筛选器。触屏手感、跨应用 OS 拖动、触控板回弹及 VoiceOver 朗读仍按[交互验证](../../../docs/INTERACTIONS.md)人工确认。
 
 `MarkdownPointerWindowTests` 经 AppKit 指针事件传递点击次数，依次检查源码、预览、富文本的单／双／三击、按词／逻辑行拖动及反向扩选、Shift 字符扩选和链接多击。它与 Touch 用例分开运行，防止一条输入路径掩盖另一条的缺失。
+
+`MarkdownDragPreviewWindowTests` 在三个宿主中拖动同一个含强调标记和中文的选区。检查源码与显示文字各自的导出值、默认选区预览中的字形和透明像素，以及自定义图片的尺寸和抓取点。该用例在 AppKit 会话启动前取消已检查的请求。

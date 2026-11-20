@@ -6,6 +6,7 @@ import scoop.graphics.native.withSkiaCanvas
 import scoop.markdown.*
 import scoop.platform.time.MonotonicTimeSource
 import scoop.surface.FrameSubmission
+import scoop.surface.addEventFinished
 import scoop.test.*
 import scoop.tests.graphics.readNativePixel
 import scoop.tests.surface.*
@@ -28,7 +29,7 @@ private class MarkdownViewportWindowTests {
 }
 
 internal enum MdViewportTest {
-    Scrollbars, Interactions, Pointer
+    Scrollbars, Interactions, Pointer, DragPreview
 }
 
 internal fun mdRunViewportProbe(scenario: MdViewportTest) {
@@ -102,6 +103,7 @@ internal class MdViewportProbe(
     var waiting = false
     var finished = false
     var selection = editor.selection
+    var dragObserved = false
     var interactionRevision = -1L
     var openedLinks = 0
     val width = 400.0
@@ -161,6 +163,8 @@ internal class MdViewportProbe(
             return false
         if (!mounted)
             return frames!!.snapshot().presentations > beforeFrame
+        if (scenario == MdViewportTest.DragPreview && step.value == 3 && !dragObserved)
+            return false
         return (!interactions || mdInteractionReady(this)) &&
             accepted ==
             step.value &&
@@ -199,6 +203,10 @@ internal class MdViewportProbe(
     }
 
     private fun advance(active: ActiveApplication) {
+        if (scenario == MdViewportTest.DragPreview) {
+            mdAdvanceDragPreview(this, active)
+            return
+        }
         if (scenario == MdViewportTest.Pointer) {
             mdAdvancePointer(this, active);
             return
@@ -359,6 +367,12 @@ internal class MdViewportField(
         }
     public override fun onMount() {
         probe.field = Some(this)
+        if (probe.scenario == MdViewportTest.DragPreview)
+            scope.resource {
+                mdInteractionArea(this).scope.addEventFinished {
+                    event -> mdInspectDragPreview(this, event)
+                }
+            }
         update()
     }
     public override fun update(): UiInvalidation {
@@ -366,6 +380,11 @@ internal class MdViewportField(
         val interaction =
             MarkdownInteractionOptions(
                 contextMenu = probe.interaction.contextMenu,
+                drag =
+                    if (probe.scenario == MdViewportTest.DragPreview)
+                        mdPreviewOptions(probe.kind)
+                    else
+                        probe.interaction.drag,
                 touch = probe.interaction.touch,
                 scrollbarBehavior = probe.interaction.scrollbarBehavior,
                 semantics = probe.interaction.semantics
