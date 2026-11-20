@@ -158,7 +158,7 @@ private fun mdSourceScheduleDrag(host: MarkdownSourceHost) {
         return
     }
     if (!host.dragTimer.isScheduled)
-        host.dragTimer.schedule(MonotonicTimeSource.markNow() + Duration.milliseconds(16L))
+        host.dragTimer.schedule(MonotonicTimeSource.now() + Duration.milliseconds(16L))
 }
 
 internal fun mdSourceDragTick(host: MarkdownSourceHost) {

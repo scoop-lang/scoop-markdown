@@ -1,9 +1,9 @@
 package scoop.ui.markdown
 
 import scoop.graphics.*
+import scoop.platform.time.MonotonicInstant
 import scoop.platform.time.MonotonicTimeSource
 import scoop.surface.*
-import scoop.time.*
 import scoop.ui.*
 import scoop.window.*
 
@@ -27,7 +27,7 @@ internal class MdScrollbarFeedback(val target: MdTextTarget): Closeable {
     private var horizontal: Rect? = None
     private var vertical: Rect? = None
     private var bounds = Rect(0.0, 0.0, 0.0, 0.0)
-    private var deadline: TimeMark? = None
+    private var deadline: MonotonicInstant? = None
     private val timer = scope.createDeadline { expire() }
     private val probe = scope.createArea()
     private val intent =
@@ -176,7 +176,7 @@ internal class MdScrollbarFeedback(val target: MdTextTarget): Closeable {
             timer.cancel()
         } else
             if (deadline == None || busy) {
-                val time = MonotonicTimeSource.markNow() + behavior.input.idleDelay
+                val time = MonotonicTimeSource.now() + behavior.input.idleDelay
                 deadline = Some(time)
                 timer.schedule(time)
             }

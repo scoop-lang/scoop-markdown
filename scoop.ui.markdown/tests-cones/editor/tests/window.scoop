@@ -138,7 +138,7 @@ internal class EditorProbe(workers: CoroutineExecutor, proxy: ApplicationProxy):
                             view.value.richFocus.isFocusActive.toString()
                     )
                     fail(Some("Three-mode test timeout at " + step.value.toString()))
-                }.schedule(MonotonicTimeSource.markNow() + Duration.seconds(45L))
+                }.schedule(MonotonicTimeSource.now() + Duration.seconds(45L))
             }
             case Window(_, WindowEvent.TextInput(val input)) -> when (input) {
                 case Enabled(_) -> inputReady = true

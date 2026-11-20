@@ -102,7 +102,7 @@ internal class EditorFeatureProbe(
                                 documents.windows.size.toString()
                         )
                     )
-                }.schedule(MonotonicTimeSource.markNow() + Duration.seconds(60L))
+                }.schedule(MonotonicTimeSource.now() + Duration.seconds(60L))
             }
             case AboutToWait -> {
                 if (!pending && ready()) {

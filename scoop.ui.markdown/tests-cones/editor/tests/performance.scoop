@@ -6,7 +6,7 @@ import scoop.graphics.*
 import scoop.graphics.text.*
 import scoop.markdown.*
 import scoop.platform.io.*
-import scoop.platform.time.*
+import scoop.platform.time.MonotonicTimeSource
 import scoop.test.*
 import scoop.tests.surface.*
 import scoop.tests.textfonts.*
@@ -89,7 +89,7 @@ internal class MarkdownPerfProbe(
     private var inputReady = false
     private var presentations = 0L
     private var accepted = -1
-    private var acceptedAt = MonotonicTimeSource.markNow()
+    private var acceptedAt = MonotonicTimeSource.now()
     private var acceptedWork = 0.0
     private var structureRevision = -1L
     private var structureAt = acceptedAt
@@ -154,7 +154,7 @@ internal class MarkdownPerfProbe(
                         )
                     )
                 }.schedule(
-                    MonotonicTimeSource.markNow() +
+                    MonotonicTimeSource.now() +
                         Duration.seconds(
                             if (cases.size == 1L)
                                 60L
@@ -204,7 +204,7 @@ internal class MarkdownPerfProbe(
                 0.5
         )
             return
-        val now = MonotonicTimeSource.markNow()
+        val now = MonotonicTimeSource.now()
         if (accepted != current) {
             accepted = current
             acceptedAt = now
@@ -252,7 +252,7 @@ internal class MarkdownPerfProbe(
     private fun issue(action: () -> Unit) {
         presentations = frames!!.snapshot().presentations
         accepted = -1
-        started = MonotonicTimeSource.markNow()
+        started = MonotonicTimeSource.now()
         action()
         ticket.value += 1
         scope!!.requestFrame()
@@ -262,7 +262,7 @@ internal class MarkdownPerfProbe(
         when (phase) {
             case 0 -> beginCase()
             case 1 -> {
-                firstViewport = markdownPerfMilliseconds(started.elapsedNow())
+                firstViewport = markdownPerfMilliseconds(MonotonicTimeSource.now() - started)
                 markdownPerfLog(
                     "PERF_VIEWPORT," + cases[caseIndex].name + ",ms=" + firstViewport.toString()
                 )
@@ -350,10 +350,10 @@ internal class MarkdownPerfProbe(
     private fun typeNext() {
         val text = ["a", "中", "😀", "b"][issued.toLong() % 4L]
         issue {
-            val before = MonotonicTimeSource.markNow()
+            val before = MonotonicTimeSource.now()
             assertEquals(0, editorNativeText(window!!, text))
             if (issued >= 4)
-                nativeWork.add(markdownPerfMilliseconds(before.elapsedNow()))
+                nativeWork.add(markdownPerfMilliseconds(MonotonicTimeSource.now() - before))
             expectedBytes += text.byteLength
             expectedCursor += text.byteLength
             issued += 1

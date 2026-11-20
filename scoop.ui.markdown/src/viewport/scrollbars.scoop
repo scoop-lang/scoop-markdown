@@ -309,7 +309,7 @@ private class MdScrollbar(
     private fun schedule(resume: Boolean) {
         val delay = behavior.input.repeatDelay ?: return
         timer.schedule(
-            MonotonicTimeSource.markNow() +
+            MonotonicTimeSource.now() +
                 if (resume)
                     behavior.input.repeatInterval
                 else

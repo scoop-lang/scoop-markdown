@@ -62,7 +62,7 @@ private class MdParseProbe(
     var previous: MarkdownParsedDocument? = None
     var finished = false
     private var step = 0
-    private val deadline = MonotonicTimeSource.markNow() + Duration.seconds(20L)
+    private val deadline = MonotonicTimeSource.now() + Duration.seconds(20L)
 
     public override fun onEvent(active: ActiveApplication, event: ApplicationEvent) {
         when (event) {

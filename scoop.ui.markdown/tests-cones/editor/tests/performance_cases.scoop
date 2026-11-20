@@ -3,7 +3,7 @@ package scoop.tests.markdown.editor
 import scoop.markdown.*
 import scoop.platform.env.*
 import scoop.platform.fs.*
-import scoop.platform.time.*
+import scoop.platform.time.MonotonicTimeSource
 import scoop.text.repeat
 import scoop.ui.markdown.*
 
@@ -23,7 +23,7 @@ internal fun markdownPerformanceCases(): Array<MarkdownPerfCase> {
             case Some(val path) -> Path.fromOsString(path)
             case None -> currentDirectory()
         }
-    val before = MonotonicTimeSource.markNow()
+    val before = MonotonicTimeSource.now()
     val documents =
         root.resolve(Path.fromString("test-support/performance/SCOOP-IMPL-SPEC.md")).readText() +
             "\n\n" +
@@ -32,7 +32,7 @@ internal fun markdownPerformanceCases(): Array<MarkdownPerfCase> {
         "PERF_CORPUS,bytes=" +
             documents.byteLength.toString() +
             ",read_ms=" +
-            markdownPerfMilliseconds(before.elapsedNow()).toString()
+            markdownPerfMilliseconds(MonotonicTimeSource.now() - before).toString()
     )
     val result = ArrayList<MarkdownPerfCase>()
     for (mib in [1L, 5L]) {

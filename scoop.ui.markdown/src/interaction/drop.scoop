@@ -162,7 +162,7 @@ internal class MdTextDrop(private val target: MdTextTarget): Closeable {
             return
         }
         if (!timer.isScheduled)
-            timer.schedule(MonotonicTimeSource.markNow() + Duration.milliseconds(16L))
+            timer.schedule(MonotonicTimeSource.now() + Duration.milliseconds(16L))
     }
     private fun tick() {
         if (!enabled || binding.hover == None) {

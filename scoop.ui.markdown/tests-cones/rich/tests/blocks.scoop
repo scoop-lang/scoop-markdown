@@ -100,7 +100,7 @@ private class BlockProbe(workers: CoroutineExecutor, proxy: ApplicationProxy): C
                                 inputReady.toString()
                         )
                     )
-                }.schedule(MonotonicTimeSource.markNow() + Duration.seconds(45L))
+                }.schedule(MonotonicTimeSource.now() + Duration.seconds(45L))
             }
             case Window(_, WindowEvent.TextInput(val event)) -> when (event) {
                 case Enabled(_) -> inputReady = true

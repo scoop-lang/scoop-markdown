@@ -25,6 +25,8 @@
 
 窗口测试需要桌面会话；原生输入测试还需要窗口获得焦点。测试剪贴板时保存并恢复系统原有内容。每个窗口 filter 单独启动测试进程，以满足单次 Application 生命周期。构建命令使用 `~/.scoop`，不需要另一个 Scoop 源码 checkout。
 
+源码、预览和图像测试的像素探针需要与 `libscoop_skia.a` 同版本的 Skia C++ 头文件。编译探针时，所选 sysroot 下应有 `lib/<target>/include/skia/include/core/SkCanvas.h`。使用 `scoop-install` 管理工具链时，可以省略示例命令中的 `--sysroot ~/.scoop`，用 `scoop-install show` 的 `Root` 查看当前 sysroot。
+
 Markdown 原生交互更新同步了 Darwin 窗口头文件及 contact 探针，来源为 Scoop `95dfb8e409`；直接触点通过生产队列／解码路径验证，不冒充真实触屏硬件。另有小型 AppKit 探针检查 Markdown 实际无障碍节点及原生菜单命令，均只作为测试依赖。
 
 应用窗口回归复用这些探针，通过无障碍 Press 激活真实工具栏及下拉项，检查控件的屏幕范围，并通过原生菜单 action 验证嵌套标题菜单。它不改变编辑器生产入口或用户最近文件记录。

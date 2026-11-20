@@ -93,7 +93,7 @@ private class SearchWindowProbe(workers: CoroutineExecutor, proxy: ApplicationPr
                 host.attach(native, { scope -> SearchWindowRoot(this, scope) })
                 native.createDeadline {
                     fail(Some("Search timeout at " + step.value.toString()))
-                }.schedule(MonotonicTimeSource.markNow() + Duration.seconds(45L))
+                }.schedule(MonotonicTimeSource.now() + Duration.seconds(45L))
             }
             case AboutToWait -> {
                 if (!waiting && ready()) {

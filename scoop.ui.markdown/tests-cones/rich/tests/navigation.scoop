@@ -84,7 +84,7 @@ private class NavigationWindowProbe(
                 native.createDeadline {
                     fail(Some("Navigation timeout at " + step.value.toString()))
                 }
-                .schedule(MonotonicTimeSource.markNow() + Duration.seconds(45L))
+                .schedule(MonotonicTimeSource.now() + Duration.seconds(45L))
             }
             case AboutToWait -> {
                 if (!waiting && ready()) {

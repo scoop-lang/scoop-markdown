@@ -72,7 +72,7 @@ private class InPlaceSourceProbe(workers: CoroutineExecutor, proxy: ApplicationP
                 native.createDeadline {
                     fail(Some("In-place source timeout at " + step.value.toString()))
                 }
-                .schedule(MonotonicTimeSource.markNow() + Duration.seconds(45L))
+                .schedule(MonotonicTimeSource.now() + Duration.seconds(45L))
             }
             case Window(_, WindowEvent.TextInput(val value)) -> when (value) {
                 case Enabled(_) -> inputReady = true
