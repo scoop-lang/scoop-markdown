@@ -141,7 +141,7 @@ private fun mdPointerSelection(probe: MdViewportProbe, anchor: Long, cursor: Lon
     assertEquals(cursor, probe.editor.selection.cursor.byteOffset)
 }
 
-private fun mdPointerPoint(probe: MdViewportProbe, offset: Long): Point {
+internal fun mdPointerPoint(probe: MdViewportProbe, offset: Long): Point {
     val field = probe.field!!
     val caret = mdInteractionCaret(field, offset)
     val point =
@@ -154,7 +154,7 @@ private fun mdPointerMove(probe: MdViewportProbe, offset: Long) {
     assertTrue(moveSurfacePointer(probe.window!!, point.x, point.y))
 }
 
-private fun mdPointerButton(
+internal fun mdPointerButton(
     probe: MdViewportProbe,
     offset: Long,
     down: Boolean,

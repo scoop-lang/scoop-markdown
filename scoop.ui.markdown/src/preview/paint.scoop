@@ -303,26 +303,7 @@ private fun mdPaintPreviewRow(
                     )
                 content.draw {
                     paint -> for (box in boxes) {
-                        if (run.flags.strike)
-                            paint.canvas.drawRect(
-                                Rect(
-                                    box.rect.x,
-                                    box.rect.y + box.rect.height * 0.52,
-                                    box.rect.width,
-                                    1.0
-                                ),
-                                Paint(style.text.color)
-                            )
-                        if (run.flags.link)
-                            paint.canvas.drawRect(
-                                Rect(
-                                    box.rect.x,
-                                    box.rect.y + box.rect.height - 1.0,
-                                    box.rect.width,
-                                    1.0
-                                ),
-                                Paint(style.link)
-                            )
+                        mdPaintRunLines(paint.canvas, box.rect, run, style)
                     }
                 }
             }
@@ -333,25 +314,7 @@ private fun mdPaintPreviewRow(
                         continue
                     content.draw {
                         paint ->
-                        when (objectText.label) {
-                            case Some(_) -> paint.canvas.drawRect(
-                                box.rect,
-                                Paint(style.codeBackground)
-                            )
-                            case None -> Unit
-                        }
-                        when (objectText.image) {
-                            case Some(val image) -> paint.canvas.drawImage(
-                                image.image,
-                                Rect(
-                                    box.rect.x,
-                                    box.rect.y,
-                                    objectText.imageSize.width,
-                                    objectText.imageSize.height
-                                )
-                            )
-                            case None -> Unit
-                        }
+                        mdPaintInlineImage(paint.canvas, box.rect, objectText, style)
                         when (selectedBounds) {
                             case Some(val bounds) -> if (
                                 bounds.start <
@@ -394,7 +357,7 @@ private fun mdPaintPreviewRow(
         context.drawTextLayout(label.key, label.layout, 0L, label.origin)
 }
 
-private fun mdPreviewBorder(canvas: Canvas, rect: Rect, color: Color) {
+internal fun mdPreviewBorder(canvas: Canvas, rect: Rect, color: Color) {
     val paint = Paint(color)
     canvas.drawRect(Rect(rect.x, rect.y, rect.width, 1.0), paint)
     canvas.drawRect(Rect(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0), paint)

@@ -1,0 +1,90 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.window.Utf8Range
+
+internal fun mdPaintInlineImage(
+    canvas: Canvas,
+    rect: Rect,
+    objectText: MdPreviewObjectText,
+    style: MarkdownPreviewStyle
+) {
+    when (objectText.label) {
+        case Some(_) -> canvas.drawRect(rect, Paint(style.codeBackground))
+        case None -> Unit
+    }
+    when (objectText.image) {
+        case Some(val image) -> canvas.drawImage(
+            image.image,
+            Rect(rect.x, rect.y, objectText.imageSize.width, objectText.imageSize.height)
+        )
+        case None -> Unit
+    }
+}
+
+internal fun mdPaintRunLines(
+    canvas: Canvas,
+    rect: Rect,
+    run: MdDisplayRun,
+    style: MarkdownPreviewStyle
+) {
+    if (run.flags.strike)
+        canvas.drawRect(
+            Rect(rect.x, rect.y + rect.height * 0.52, rect.width, 1.0),
+            Paint(style.text.color)
+        )
+    if (run.flags.link)
+        canvas.drawRect(
+            Rect(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
+            Paint(style.link)
+        )
+}
+
+/** Reuses shaped glyphs and owned inline image resources from the accepted row. */
+internal fun mdDrawDragCell(
+    canvas: Canvas,
+    cell: MdPreviewText,
+    text: MdDisplayText,
+    style: MarkdownPreviewStyle
+) {
+    for (run in text.runs) {
+        if (run.flags.code) {
+            val boxes =
+                cell.layout.selection(
+                    cell.display.displayRange(Utf8Range(run.range.start, run.range.end))
+                )
+            for (box in boxes)
+                canvas.drawRect(box.rect, Paint(style.codeBackground))
+        }
+    }
+    canvas.drawText(cell.layout)
+    for (run in text.runs) {
+        if (run.flags.link || run.flags.strike) {
+            val boxes =
+                cell.layout.selection(
+                    cell.display.displayRange(Utf8Range(run.range.start, run.range.end))
+                )
+            for (box in boxes)
+                mdPaintRunLines(canvas, box.rect, run, style)
+        }
+    }
+    for (placement in cell.layout.inlineObjects) {
+        val rect = placement.box?.rect ?: continue
+        for (item in cell.objects) {
+            if (item.key != placement.key)
+                continue
+            mdPaintInlineImage(canvas, rect, item, style)
+            when (item.label) {
+                case Some(val label) -> {
+                    mdPreviewBorder(canvas, rect, style.border)
+                    canvas.drawText(
+                        label,
+                        Point(rect.x + item.labelOrigin.x, rect.y + item.labelOrigin.y)
+                    )
+                }
+                case None -> Unit
+            }
+        }
+    }
+}

@@ -136,6 +136,21 @@ internal class MdPreviewTarget(val host: MarkdownPreviewHost): MdTextTarget {
         return result.toArray()
     }
 
+    public override fun paintDragContent(canvas: Canvas) {
+        val frame = host.currentFrame() ?: return
+        for (row in frame.rows) {
+            val top = frame.padding + frame.heights.prefix(row.index)
+            for (index in 0L ..< row.resource.cells.size) {
+                val cell = row.resource.cells[index]
+                canvas.withState {
+                    target ->
+                    target.translate(frame.contentX + cell.origin.x, top + cell.origin.y)
+                    mdDrawDragCell(target, cell.text, row.row.cells[index], host.style)
+                }
+            }
+        }
+    }
+
     public override fun select(value: MarkdownSelection, reveal: Boolean) {
         perform { editor.setSelection(value) }
         if (reveal)

@@ -23,3 +23,7 @@ kind = "library"
 "scoop.tests:window-native" = { version = "0.1.0", path = "../../../test-support/window-native" }
 "scoop.tests:text-fonts" = { version = "0.1.0", path = "../../../test-support/text-fonts" }
 "scoop.tests:graphics-native" = { version = "0.1.0", path = "../../../test-support/graphics-native" }
+
+[[native.sources]]
+path = "native/drag_preview.m"
+when = { os = "darwin" }

@@ -1,0 +1,55 @@
+package scoop.ui.markdown
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.markdown.*
+import scoop.test.*
+
+@Test
+private class MarkdownDragPaintTests {
+    @Test
+    fun selectedRichContentRetainsInlineCodeAndLinkColorsOnTransparentPixels() {
+        val document = MarkdownDocument.fromText("Before `code` [link](https://example.com)")
+        val row = mdProjectMarkdown(document.parse(MarkdownProfile.Editor)).rows[0L]
+        val text = row.cells[0L]
+        val style =
+            MarkdownPreviewStyle(codeBackground = Color(1.0, 0.0, 0.0), link = Color(0.0, 0.0, 1.0))
+        FontCollection().use {
+            fonts -> mdPreviewText(
+                fonts,
+                text,
+                style,
+                style.text,
+                paragraphStyle {},
+                None,
+                4,
+                MdPreviewImages([]),
+                0L
+            ).use {
+                cell -> RasterSurface(240, 64).use {
+                    surface ->
+                    surface.draw {
+                        canvas ->
+                        canvas.clear(Color.Transparent)
+                        mdDrawDragCell(canvas, cell, text, style)
+                    }
+                    val bytes = surface.readPixels()
+                    var code = false
+                    var link = false
+                    var index = 0L
+                    while (index < bytes.size) {
+                        val red = bytes[index].toUByte().toInt()
+                        val blue = bytes[index + 2L].toUByte().toInt()
+                        val alpha = bytes[index + 3L].toUByte().toInt()
+                        code = code || (alpha > 200 && red > 220 && blue < 30)
+                        link = link || (alpha > 200 && blue > 220 && red < 30)
+                        index += 4L
+                    }
+                    assertTrue(code)
+                    assertTrue(link)
+                    assertEquals(0.toByte(), bytes[bytes.size - 1L])
+                }
+            }
+        }
+    }
+}

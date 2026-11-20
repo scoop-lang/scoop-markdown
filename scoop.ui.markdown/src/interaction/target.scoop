@@ -26,6 +26,7 @@ internal interface MdTextTarget {
     fun hit(point: Point): MarkdownPosition?
     fun word(point: Point, line: Boolean): MarkdownRange?
     fun selectionBoxes(range: MarkdownRange): Array<Rect>
+    fun paintDragContent(canvas: Canvas)
     fun caret(position: MarkdownPosition): Rect?
     fun select(value: MarkdownSelection, reveal: Boolean)
     fun tap(point: Point, count: Int): Boolean

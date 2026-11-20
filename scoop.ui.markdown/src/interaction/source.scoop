@@ -75,6 +75,11 @@ internal class MdSourceTarget(val host: MarkdownSourceHost): MdTextTarget {
         }
         return result.toArray()
     }
+    public override fun paintDragContent(canvas: Canvas) {
+        val frame = host.accepted ?: return
+        for (row in frame.rows)
+            canvas.drawText(row.layout, Point(frame.contentX, frame.padding + frame.top(row.index)))
+    }
     public override fun caret(position: MarkdownPosition): Rect? = host.caret(position)
     public override fun select(value: MarkdownSelection, reveal: Boolean) {
         host.perform({ editor.setSelection(value) }, reveal)
