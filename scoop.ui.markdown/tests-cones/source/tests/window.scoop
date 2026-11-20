@@ -118,7 +118,7 @@ internal class MdWindowProbe: Closeable {
                         )
                     )
                 }
-                .schedule(MonotonicTimeSource.markNow() + Duration.seconds(45L))
+                .schedule(MonotonicTimeSource.now() + Duration.seconds(45L))
             }
             case Window(_, WindowEvent.TextInput(val input)) -> if (step.value >= 48) {
                 when (input) {

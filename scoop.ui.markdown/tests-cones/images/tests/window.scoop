@@ -161,7 +161,7 @@ internal class ImageWindowProbe(
                     dump()
                     fail(Some("Image test timed out at " + step.value.toString()))
                 }
-                .schedule(MonotonicTimeSource.markNow() + Duration.seconds(60L))
+                .schedule(MonotonicTimeSource.now() + Duration.seconds(60L))
             }
             case AboutToWait -> {
                 if (step.value == 0) {

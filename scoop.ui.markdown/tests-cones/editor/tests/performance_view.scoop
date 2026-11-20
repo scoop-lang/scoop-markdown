@@ -1,7 +1,7 @@
 package scoop.tests.markdown.editor
 
 import scoop.graphics.*
-import scoop.platform.time.*
+import scoop.platform.time.MonotonicTimeSource
 import scoop.surface.*
 import scoop.ui.*
 import scoop.ui.markdown.*
@@ -47,18 +47,21 @@ private class MarkdownPerfFrame(
     public override fun measure(context: MeasureContext, constraints: Constraints): LayoutResult<
         MarkdownPerfLayout
     > {
-        val started = MonotonicTimeSource.markNow()
+        val started = MonotonicTimeSource.now()
         val size = context.measureChild(0L, constraints)
         context.placeChild(0L, Point(0.0, 0.0))
         return LayoutResult(
             size,
-            MarkdownPerfLayout(size.size.width, markdownPerfMilliseconds(started.elapsedNow()))
+            MarkdownPerfLayout(
+                size.size.width,
+                markdownPerfMilliseconds(MonotonicTimeSource.now() - started)
+            )
         )
     }
     public override fun scene(context: SceneContext, layout: MarkdownPerfLayout) {
-        val started = MonotonicTimeSource.markNow()
+        val started = MonotonicTimeSource.now()
         context.children()
-        val painted = markdownPerfMilliseconds(started.elapsedNow())
+        val painted = markdownPerfMilliseconds(MonotonicTimeSource.now() - started)
         val current = ticket.value
         val revision = probe.editor.snapshot.revision
         context.onFrameComplete {

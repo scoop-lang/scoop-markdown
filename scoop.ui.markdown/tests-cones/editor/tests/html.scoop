@@ -110,7 +110,7 @@ private class HtmlClipboardProbe(workers: CoroutineExecutor, proxy: ApplicationP
                                 inputReady.toString()
                         )
                     )
-                }.schedule(MonotonicTimeSource.markNow() + Duration.seconds(45L))
+                }.schedule(MonotonicTimeSource.now() + Duration.seconds(45L))
             }
             case Window(_, WindowEvent.TextInput(val input)) -> when (input) {
                 case Enabled(_) -> inputReady = true

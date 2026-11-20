@@ -423,7 +423,7 @@ public class MarkdownRichHost public constructor(
                 !window.isOccluded &&
                 !blink.isScheduled
         )
-            blink.schedule(MonotonicTimeSource.markNow() + Duration.milliseconds(500L))
+            blink.schedule(MonotonicTimeSource.now() + Duration.milliseconds(500L))
     }
 
     public override fun close() {

@@ -126,7 +126,7 @@ internal class PreviewProbe(workers: CoroutineExecutor, proxy: ApplicationProxy)
                             frames!!.snapshot().required.toString()
                     )
                     fail(Some("Preview test timeout at " + step.value.toString()))
-                }.schedule(MonotonicTimeSource.markNow() + Duration.seconds(45L))
+                }.schedule(MonotonicTimeSource.now() + Duration.seconds(45L))
             }
             case AboutToWait -> {
                 if (

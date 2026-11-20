@@ -16,6 +16,8 @@
 
 使用已安装并更新的 [Scoop 工具链](https://github.com/scoop-lang/scoop)，默认位置为 `~/.scoop`。基础 UI/window 库需要包含公开文本绘制与多格式剪贴板接口，以及 `TextInputOperation.SetSelection`、`TextEditCommand.DeleteSelection`、`DragSource`／`DropTarget`、`LongPress`／`ScrollPan`、视口物理效果和 `SemanticsHandle.updateScrollBar`。仓库中的库使用本地 path 依赖，其他 Scoop 库消费工具链的预编译资源。
 
+光标闪烁、拖动滚屏和滚动条定时器使用系统单调时钟。工具链需提供 `MonotonicTimeSource.now()` 和 `WindowDeadline.schedule(MonotonicInstant)`。见 [Scoop #155](https://github.com/scoop-lang/scoop/pull/155)。
+
 如果安装中的基础库尚未更新，可给 `check`／`build`／`run`／`test` 追加 `--cone-path /absolute/path/to/cones`，消费配套的新预编译基础库；不需要重建编译器。
 
 完整编辑器还要求 `scoop.ui.component` 包含 Resizable 末尾把手的挂载修复：只有相邻面板之间创建把手。缺少该修复的基础库会在单栏／双栏窗口初始化无障碍操作时越界退出，需更新配套组件产物。
@@ -23,9 +25,9 @@
 以下命令从仓库根运行：
 
 ```sh
-~/.scoop/bin/scoop --sysroot ~/.scoop check . --release
-~/.scoop/bin/scoop --sysroot ~/.scoop build markdown-editor --release
-~/.scoop/bin/scoop --sysroot ~/.scoop run markdown-editor --release -- /absolute/path/document.md
+~/.scoop/bin/scoop check . --release
+~/.scoop/bin/scoop build markdown-editor --release
+~/.scoop/bin/scoop run markdown-editor --release -- /absolute/path/document.md
 ```
 
 原生上下文菜单、拖放、Touch／Pen、系统滚动条、回弹与无障碍操作说明见[交互验证](docs/INTERACTIONS.md)，三个 UI 示例可共用[演示文稿](examples/interactions.md)。
@@ -35,7 +37,7 @@
 无 UI 文件处理示例可以独立运行：
 
 ```sh
-~/.scoop/bin/scoop --sysroot ~/.scoop run scoop.markdown/examples/source --release -- input.md expanded.md
+~/.scoop/bin/scoop run scoop.markdown/examples/source --release -- input.md expanded.md
 ```
 
 ## 开发与验证
@@ -43,12 +45,12 @@
 根 `Cone.toml` 组织两个库、编辑器、示例和测试辅助 Cone；默认选择两个库与编辑器。独立消费者可通过 path 依赖这两个库的目录。
 
 ```sh
-~/.scoop/bin/scoop --sysroot ~/.scoop fmt . --workspace --check
-~/.scoop/bin/scoop --sysroot ~/.scoop check scoop.markdown --tests --release
-~/.scoop/bin/scoop --sysroot ~/.scoop check scoop.ui.markdown --tests --release
-~/.scoop/bin/scoop --sysroot ~/.scoop test scoop.markdown --release
-~/.scoop/bin/scoop --sysroot ~/.scoop test scoop.ui.markdown --release
-~/.scoop/bin/scoop --sysroot ~/.scoop test scoop.markdown/examples/source --release
+~/.scoop/bin/scoop fmt . --workspace --check
+~/.scoop/bin/scoop check scoop.markdown --tests --release
+~/.scoop/bin/scoop check scoop.ui.markdown --tests --release
+~/.scoop/bin/scoop test scoop.markdown --release
+~/.scoop/bin/scoop test scoop.ui.markdown --release
+~/.scoop/bin/scoop test scoop.markdown/examples/source --release
 ```
 
 库的原生交互测试在 `scoop.ui.markdown/tests-cones/`，完整应用的窗口测试在 `markdown-editor/tests-cones/window/`，需要桌面会话及窗口焦点，运行方法见[测试说明](test-support/README.md)。大文档测试使用仓库自带的固定语料。所有构建产物留在被忽略的 `target/`；原始测试日志保存在仓库外。
